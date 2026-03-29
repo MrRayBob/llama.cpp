@@ -288,6 +288,32 @@ static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_q8_0(
     return sum;
 }
 
+template <int D, int nthreads>
+static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_pq3_5(
+    const char * __restrict__ K_c, const void * __restrict__ Q_v, const int * __restrict__ Q_q8, const void * __restrict__ Q_ds_v) {
+
+    const block_pq3_5 * K_pq3_5 = (const block_pq3_5 *) K_c;
+    GGML_UNUSED(Q_v);
+
+    float sum = 0.0f;
+
+#pragma unroll
+    for (int k_KQ_0 = 0; k_KQ_0 < int(D/sizeof(int)); k_KQ_0 += nthreads) {
+        const int k_KQ = k_KQ_0 + (nthreads == WARP_SIZE ? threadIdx.x : threadIdx.x % nthreads);
+
+        const int ib = k_KQ / (QK_PQ3_5 / 4);
+        const int iqs = k_KQ % (QK_PQ3_5 / 4);
+        const int sub = iqs / 8;
+        const int v = pq3_5_get_int8x4_device(K_pq3_5[ib].qs, iqs * 4);
+        const int u = Q_q8[k_KQ_0 / nthreads];
+        const float Q_d = ((const float2 *) Q_ds_v)[k_KQ_0 / nthreads].x;
+
+        sum += GGML_FP16_TO_FP32(K_pq3_5[ib].d[sub]) * Q_d * ggml_cuda_dp4a(v, u, 0);
+    }
+
+    return sum;
+}
+
 template <typename Tds, int ni>
 static __device__ __forceinline__ void quantize_q8_1_to_shared(
     const float * __restrict__ x, const float scale, int * __restrict__ yq32, void * __restrict__ yds) {
@@ -591,6 +617,8 @@ constexpr __device__ vec_dot_KQ_t get_vec_dot_KQ() {
         return vec_dot_fattn_vec_KQ_q5_1<D, nthreads>;
     } else if constexpr (type_K == GGML_TYPE_Q8_0) {
         return vec_dot_fattn_vec_KQ_q8_0<D, nthreads>;
+    } else if constexpr (type_K == GGML_TYPE_PQ3_5) {
+        return vec_dot_fattn_vec_KQ_pq3_5<D, nthreads>;
     } else if constexpr (type_K == GGML_TYPE_BF16) {
         return vec_dot_fattn_vec_KQ_bf16<D, nthreads>;
     } else {

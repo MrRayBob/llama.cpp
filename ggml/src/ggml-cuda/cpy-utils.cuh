@@ -153,6 +153,33 @@ static __device__ void quantize_f32_q8_0_block(const float * __restrict__ x, blo
     }
 }
 
+static __device__ void quantize_f32_pq3_5_block(const float * __restrict__ x, block_pq3_5 * __restrict__ y) {
+#pragma unroll
+    for (int i = 0; i < PQ3_5_CODES_PER_BLOCK; ++i) {
+        y->qs[i] = 0;
+    }
+
+    for (int sub = 0; sub < 2; ++sub) {
+        float amax = 0.0f;
+
+#pragma unroll
+        for (int j = 0; j < 32; ++j) {
+            amax = fmaxf(amax, fabsf(x[sub * 32 + j]));
+        }
+
+        const float d = amax > 0.0f ? amax / 4.0f : 0.0f;
+        const float id = d > 0.0f ? 1.0f / d : 0.0f;
+        y->d[sub] = d;
+
+#pragma unroll
+        for (int j = 0; j < 32; ++j) {
+            int q = d > 0.0f ? (int) roundf(x[sub * 32 + j] * id) : 0;
+            q = max(-4, min(3, q));
+            pq3_5_set_code_device(y->qs, sub * 32 + j, (uint8_t) (q + 4));
+        }
+    }
+}
+
 static __device__ void quantize_f32_iq4_nl_block(const float * __restrict__ x, block_iq4_nl * __restrict__ y) {
     float amax = 0.0f;
     float vmax = 0.0f;
@@ -205,6 +232,10 @@ static __device__ void cpy_blck_f32_q5_1(const char * cxi, char * cdsti) {
 
 static __device__ void cpy_blck_f32_q8_0(const char * cxi, char * cdsti) {
     quantize_f32_q8_0_block((const float *)cxi, (block_q8_0 *)cdsti);
+}
+
+static __device__ void cpy_blck_f32_pq3_5(const char * cxi, char * cdsti) {
+    quantize_f32_pq3_5_block((const float *)cxi, (block_pq3_5 *)cdsti);
 }
 
 static __device__ void cpy_blck_f32_iq4_nl(const char * cxi, char * cdsti) {

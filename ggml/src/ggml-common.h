@@ -299,6 +299,15 @@ typedef struct {
 } block_q3_K;
 static_assert(sizeof(block_q3_K) == sizeof(ggml_half) + QK_K / 4 + QK_K / 8 + 12, "wrong q3_K block size/padding");
 
+// Runtime-only 3.5 bpw packed quantization for KV K-cache.
+// Two 32-value symmetric 3-bit sub-blocks share 2 fp16 scales.
+#define QK_PQ3_5 64
+typedef struct {
+    ggml_half d[2];
+    uint8_t qs[3 * QK_PQ3_5 / 8];
+} block_pq3_5;
+static_assert(sizeof(block_pq3_5) == 2 * sizeof(ggml_half) + 3 * QK_PQ3_5 / 8, "wrong pq3_5 block size/padding");
+
 // 4-bit quantization
 // 8 blocks of 32 elements each
 // weight is represented as x = a * q + b

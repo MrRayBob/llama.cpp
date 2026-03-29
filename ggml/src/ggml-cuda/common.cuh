@@ -969,6 +969,13 @@ struct ggml_cuda_type_traits<GGML_TYPE_Q3_K> {
 };
 
 template<>
+struct ggml_cuda_type_traits<GGML_TYPE_PQ3_5> {
+    static constexpr int qk = QK_PQ3_5;
+    static constexpr int qr = 1;
+    static constexpr int qi = QK_PQ3_5 / 4;
+};
+
+template<>
 struct ggml_cuda_type_traits<GGML_TYPE_Q4_K> {
     static constexpr int qk = QK_K;
     static constexpr int qr = QR4_K;
@@ -981,6 +988,44 @@ struct ggml_cuda_type_traits<GGML_TYPE_Q5_K> {
     static constexpr int qr = QR5_K;
     static constexpr int qi = QI5_K;
 };
+
+static constexpr int PQ3_5_CODES_PER_BLOCK = 3 * QK_PQ3_5 / 8;
+
+static __device__ __forceinline__ uint8_t pq3_5_get_code_device(const uint8_t * __restrict__ qs, const int idx) {
+    const int bit = 3 * idx;
+    const int byte = bit / 8;
+    const int shift = bit % 8;
+
+    uint16_t packed = qs[byte];
+    if (byte + 1 < PQ3_5_CODES_PER_BLOCK) {
+        packed |= (uint16_t) qs[byte + 1] << 8;
+    }
+
+    return (packed >> shift) & 0x7;
+}
+
+static __device__ __forceinline__ void pq3_5_set_code_device(uint8_t * __restrict__ qs, const int idx, const uint8_t code) {
+    const int bit = 3 * idx;
+    const int byte = bit / 8;
+    const int shift = bit % 8;
+
+    qs[byte] |= code << shift;
+    if (shift > 5 && byte + 1 < PQ3_5_CODES_PER_BLOCK) {
+        qs[byte + 1] |= code >> (8 - shift);
+    }
+}
+
+static __device__ __forceinline__ int pq3_5_get_int8x4_device(const uint8_t * __restrict__ qs, const int idx0) {
+    int packed = 0;
+
+#pragma unroll
+    for (int i = 0; i < 4; ++i) {
+        const int8_t q = (int8_t) pq3_5_get_code_device(qs, idx0 + i) - 4;
+        packed |= ((uint8_t) q) << (8 * i);
+    }
+
+    return packed;
+}
 
 template<>
 struct ggml_cuda_type_traits<GGML_TYPE_Q6_K> {

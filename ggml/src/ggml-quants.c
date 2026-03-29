@@ -1109,6 +1109,30 @@ size_t quantize_q2_K(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, 
 
 //========================= 3-bit (de)-quantization
 
+static inline uint8_t pq3_5_get_code(const uint8_t * GGML_RESTRICT qs, int idx) {
+    const int bit = 3 * idx;
+    const int byte = bit / 8;
+    const int shift = bit % 8;
+
+    uint16_t packed = qs[byte];
+    if (byte + 1 < (int) (3 * QK_PQ3_5 / 8)) {
+        packed |= (uint16_t) qs[byte + 1] << 8;
+    }
+
+    return (packed >> shift) & 0x7;
+}
+
+static inline void pq3_5_set_code(uint8_t * GGML_RESTRICT qs, int idx, uint8_t code) {
+    const int bit = 3 * idx;
+    const int byte = bit / 8;
+    const int shift = bit % 8;
+
+    qs[byte] |= code << shift;
+    if (shift > 5 && byte + 1 < (int) (3 * QK_PQ3_5 / 8)) {
+        qs[byte + 1] |= code >> (8 - shift);
+    }
+}
+
 void quantize_row_q3_K_ref(const float * GGML_RESTRICT x, block_q3_K * GGML_RESTRICT y, int64_t k) {
     assert(k % QK_K == 0);
     const int nb = k / QK_K;
@@ -1185,6 +1209,33 @@ void quantize_row_q3_K_ref(const float * GGML_RESTRICT x, block_q3_K * GGML_REST
     }
 }
 
+void quantize_row_pq3_5_ref(const float * GGML_RESTRICT x, block_pq3_5 * GGML_RESTRICT y, int64_t k) {
+    GGML_ASSERT(k % QK_PQ3_5 == 0);
+
+    const int nb = k / QK_PQ3_5;
+    for (int ib = 0; ib < nb; ++ib) {
+        memset(y[ib].qs, 0, sizeof(y[ib].qs));
+
+        for (int sub = 0; sub < 2; ++sub) {
+            const float * x_sub = x + ib * QK_PQ3_5 + sub * 32;
+            float amax = 0.0f;
+            for (int j = 0; j < 32; ++j) {
+                amax = MAX(amax, fabsf(x_sub[j]));
+            }
+
+            const float d = amax > 0.0f ? amax / 4.0f : 0.0f;
+            const float id = d > 0.0f ? 1.0f / d : 0.0f;
+            y[ib].d[sub] = GGML_FP32_TO_FP16(d);
+
+            for (int j = 0; j < 32; ++j) {
+                int q = d > 0.0f ? nearest_int(x_sub[j] * id) : 0;
+                q = MAX(-4, MIN(3, q));
+                pq3_5_set_code(y[ib].qs, sub * 32 + j, (uint8_t) (q + 4));
+            }
+        }
+    }
+}
+
 void dequantize_row_q3_K(const block_q3_K * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
     assert(k % QK_K == 0);
     const int nb = k / QK_K;
@@ -1232,6 +1283,21 @@ void dequantize_row_q3_K(const block_q3_K * GGML_RESTRICT x, float * GGML_RESTRI
             q += 32;
         }
 
+    }
+}
+
+void dequantize_row_pq3_5(const block_pq3_5 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    GGML_ASSERT(k % QK_PQ3_5 == 0);
+
+    const int nb = k / QK_PQ3_5;
+    for (int ib = 0; ib < nb; ++ib) {
+        for (int sub = 0; sub < 2; ++sub) {
+            const float d = GGML_FP16_TO_FP32(x[ib].d[sub]);
+            for (int j = 0; j < 32; ++j) {
+                const int q = (int) pq3_5_get_code(x[ib].qs, sub * 32 + j) - 4;
+                y[ib * QK_PQ3_5 + sub * 32 + j] = d * q;
+            }
+        }
     }
 }
 
@@ -1332,6 +1398,15 @@ size_t quantize_q3_K(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, 
             qrow += row_size;
         }
     }
+    return nrow * row_size;
+}
+
+size_t quantize_pq3_5(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrow, int64_t n_per_row, const float * quant_weights) {
+    GGML_ASSERT(quant_weights == NULL);
+    GGML_UNUSED(quant_weights);
+
+    const size_t row_size = ggml_row_size(GGML_TYPE_PQ3_5, n_per_row);
+    quantize_row_pq3_5_ref(src, (block_pq3_5 *) dst, (int64_t) nrow * n_per_row);
     return nrow * row_size;
 }
 
@@ -5323,6 +5398,10 @@ bool ggml_validate_row_data(enum ggml_type type, const void * data, size_t nbyte
         case GGML_TYPE_Q3_K:
             {
                 VALIDATE_ROW_DATA_D_F16_IMPL(block_q3_K, data, nb);
+            } break;
+        case GGML_TYPE_PQ3_5:
+            {
+                VALIDATE_ROW_DATA_DVEC_F16_IMPL(block_pq3_5, data, nb, 2);
             } break;
         case GGML_TYPE_Q4_K:
             {

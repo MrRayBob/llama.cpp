@@ -2953,6 +2953,48 @@ llama_context * llama_init_from_model(
         }
     }
 
+    if (params.type_v == GGML_TYPE_PQ3_5) {
+        LLAMA_LOG_ERROR("%s: pq3_5 is only supported for the K cache\n", __func__);
+        return nullptr;
+    }
+
+    if (params.type_k == GGML_TYPE_PQ3_5) {
+
+        if (params.flash_attn_type == LLAMA_FLASH_ATTN_TYPE_DISABLED) {
+            LLAMA_LOG_ERROR("%s: K cache type pq3_5 requires flash_attn\n", __func__);
+            return nullptr;
+        }
+
+        if (params.type_v != GGML_TYPE_F16 && params.type_v != GGML_TYPE_Q8_0) {
+            LLAMA_LOG_ERROR("%s: K cache type pq3_5 only supports V cache types f16 and q8_0; got %s\n",
+                    __func__, ggml_type_name(params.type_v));
+            return nullptr;
+        }
+
+        if (model->n_devices() == 0) {
+            LLAMA_LOG_ERROR("%s: K cache type pq3_5 requires CUDA offload\n", __func__);
+            return nullptr;
+        }
+
+        for (uint32_t il = 0; il < model->hparams.n_layer; ++il) {
+            const uint32_t head_k = model->hparams.n_embd_head_k(il);
+            if (head_k != 64 && head_k != 128 && head_k != 256) {
+                LLAMA_LOG_ERROR("%s: K cache type pq3_5 only supports n_embd_head_k in {64, 128, 256}; got %u at layer %u\n",
+                        __func__, head_k, il);
+                return nullptr;
+            }
+
+            ggml_backend_dev_t dev = model->dev_layer(il);
+            ggml_backend_reg_t reg = dev ? ggml_backend_dev_backend_reg(dev) : nullptr;
+            const char * reg_name = reg ? ggml_backend_reg_name(reg) : nullptr;
+            if (reg_name == nullptr || std::strstr(reg_name, "CUDA") == nullptr) {
+                LLAMA_LOG_ERROR("%s: K cache type pq3_5 requires all KV layers on CUDA backends; layer %u uses %s\n",
+                        __func__, il, reg_name ? reg_name : "<unknown>");
+                return nullptr;
+            }
+        }
+    }
+
     if (params.flash_attn_type == LLAMA_FLASH_ATTN_TYPE_AUTO && ggml_is_quantized(params.type_v)) {
         const uint32_t blck_size = ggml_blck_size(params.type_v);
         for (uint32_t il = 0; il < model->hparams.n_layer; ++il) {

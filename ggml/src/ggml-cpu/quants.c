@@ -66,8 +66,25 @@ void quantize_row_q2_K(const float * GGML_RESTRICT x, void * GGML_RESTRICT vy, i
 
 //========================= 3-bit (de)-quantization
 
+static inline uint8_t pq3_5_get_code_cpu(const uint8_t * GGML_RESTRICT qs, int idx) {
+    const int bit = 3 * idx;
+    const int byte = bit / 8;
+    const int shift = bit % 8;
+
+    uint16_t packed = qs[byte];
+    if (byte + 1 < (int) (3 * QK_PQ3_5 / 8)) {
+        packed |= (uint16_t) qs[byte + 1] << 8;
+    }
+
+    return (packed >> shift) & 0x7;
+}
+
 void quantize_row_q3_K(const float * GGML_RESTRICT x, void * GGML_RESTRICT vy, int64_t k) {
     quantize_row_q3_K_ref(x, vy, k);
+}
+
+void quantize_row_pq3_5(const float * GGML_RESTRICT x, void * GGML_RESTRICT vy, int64_t k) {
+    quantize_row_pq3_5_ref(x, (block_pq3_5 *) vy, k);
 }
 
 // ====================== 4-bit (de)-quantization
@@ -115,6 +132,30 @@ void quantize_row_q8_K_generic(const float * GGML_RESTRICT x, void * GGML_RESTRI
 }
 
 //===================================== Dot products =================================
+
+void ggml_vec_dot_pq3_5_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    GGML_UNUSED(bs);
+    GGML_UNUSED(nrc);
+
+    GGML_ASSERT(n % QK_PQ3_5 == 0);
+
+    const block_pq3_5 * x = (const block_pq3_5 *) ((const char *) vx + bx);
+    const block_q8_0  * y = (const block_q8_0  *) ((const char *) vy + by);
+
+    float sum = 0.0f;
+    const int nb = n / QK_PQ3_5;
+    for (int ib = 0; ib < nb; ++ib) {
+        for (int sub = 0; sub < 2; ++sub) {
+            const float d = GGML_FP16_TO_FP32(x[ib].d[sub]) * GGML_FP16_TO_FP32(y[2 * ib + sub].d);
+            for (int j = 0; j < 32; ++j) {
+                const int q = (int) pq3_5_get_code_cpu(x[ib].qs, sub * 32 + j) - 4;
+                sum += d * q * y[2 * ib + sub].qs[j];
+            }
+        }
+    }
+
+    *s = sum;
+}
 
 void ggml_vec_dot_q4_0_q8_0_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
     const int qk = QK8_0;

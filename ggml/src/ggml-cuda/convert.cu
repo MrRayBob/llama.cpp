@@ -292,6 +292,22 @@ static __global__ void dequantize_block_q6_K(const void * __restrict__ vx, dst_t
 }
 
 template<typename dst_t>
+static __global__ void dequantize_block_pq3_5(const void * __restrict__ vx, dst_t * __restrict__ yy) {
+    const int64_t i = blockIdx.x;
+    const block_pq3_5 * x = (const block_pq3_5 *) vx;
+
+    const int tid = threadIdx.x;
+    const int sub = tid / 16;
+    const int lane = tid % 16;
+    dst_t * y = yy + i * QK_PQ3_5 + sub * 32 + 2 * lane;
+    const float d = GGML_FP16_TO_FP32(x[i].d[sub]);
+
+    const int idx0 = sub * 32 + 2 * lane;
+    y[0] = d * ((int) pq3_5_get_code_device(x[i].qs, idx0 + 0) - 4);
+    y[1] = d * ((int) pq3_5_get_code_device(x[i].qs, idx0 + 1) - 4);
+}
+
+template<typename dst_t>
 static __global__ void dequantize_block_iq2_xxs(const void * __restrict__ vx, dst_t * __restrict__ yy) {
 
     const int64_t i   = blockIdx.x;
@@ -520,6 +536,12 @@ static void dequantize_row_q2_K_cuda(const void * vx, dst_t * y, const int64_t k
 }
 
 template<typename dst_t>
+static void dequantize_row_pq3_5_cuda(const void * vx, dst_t * y, const int64_t k, cudaStream_t stream) {
+    const int nb = k / QK_PQ3_5;
+    dequantize_block_pq3_5<<<nb, 32, 0, stream>>>(vx, y);
+}
+
+template<typename dst_t>
 static void dequantize_row_q3_K_cuda(const void * vx, dst_t * y, const int64_t k, cudaStream_t stream) {
     const int nb = k / QK_K;
     dequantize_block_q3_K<<<nb, 64, 0, stream>>>(vx, y);
@@ -728,6 +750,8 @@ to_fp16_cuda_t ggml_get_to_fp16_cuda(ggml_type type) {
             return dequantize_row_q2_K_cuda;
         case GGML_TYPE_Q3_K:
             return dequantize_row_q3_K_cuda;
+        case GGML_TYPE_PQ3_5:
+            return dequantize_row_pq3_5_cuda;
         case GGML_TYPE_Q4_K:
             return dequantize_row_q4_K_cuda;
         case GGML_TYPE_Q5_K:
@@ -781,6 +805,8 @@ to_fp32_cuda_t ggml_get_to_fp32_cuda(ggml_type type) {
             return dequantize_row_q2_K_cuda;
         case GGML_TYPE_Q3_K:
             return dequantize_row_q3_K_cuda;
+        case GGML_TYPE_PQ3_5:
+            return dequantize_row_pq3_5_cuda;
         case GGML_TYPE_Q4_K:
             return dequantize_row_q4_K_cuda;
         case GGML_TYPE_Q5_K:
