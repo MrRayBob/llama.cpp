@@ -300,7 +300,7 @@ static __global__ void dequantize_block_pq3_5(const void * __restrict__ vx, dst_
     const int sub = tid / 16;
     const int lane = tid % 16;
     dst_t * y = yy + i * QK_PQ3_5 + sub * 32 + 2 * lane;
-    const float d = GGML_FP16_TO_FP32(x[i].d[sub]);
+    const float d = __half2float(x[i].d[sub]);
 
     const int idx0 = sub * 32 + 2 * lane;
     y[0] = d * ((int) pq3_5_get_code_device(x[i].qs, idx0 + 0) - 4);

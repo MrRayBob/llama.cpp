@@ -308,7 +308,7 @@ static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_pq3_5(
         const int u = Q_q8[k_KQ_0 / nthreads];
         const float Q_d = ((const float2 *) Q_ds_v)[k_KQ_0 / nthreads].x;
 
-        sum += GGML_FP16_TO_FP32(K_pq3_5[ib].d[sub]) * Q_d * ggml_cuda_dp4a(v, u, 0);
+        sum += __half2float(K_pq3_5[ib].d[sub]) * Q_d * ggml_cuda_dp4a(v, u, 0);
     }
 
     return sum;
