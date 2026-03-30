@@ -25,23 +25,45 @@ def repo_root() -> Path:
 def proxy_bin_path() -> Path:
     if "LLAMA_PROXY_BIN_PATH" in os.environ:
         return Path(os.environ["LLAMA_PROXY_BIN_PATH"])
+    if "LLAMA_SERVER_PROXY_BIN_PATH" in os.environ:
+        return Path(os.environ["LLAMA_SERVER_PROXY_BIN_PATH"])
     return repo_root() / "build" / "bin" / "llama-server-proxy"
-
-
-def template_file_path() -> Path:
-    return repo_root() / "models" / "templates" / "mistralai-Mistral-Nemo-Instruct-2407.jinja"
 
 
 @dataclass
 class StubState:
     summary_requests: int = 0
     main_requests: list[dict] = field(default_factory=list)
+    template_inputs: list[dict] = field(default_factory=list)
     tokenize_inputs: list[str] = field(default_factory=list)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
 def token_count(text: str) -> int:
     return len(text.split())
+
+
+def flatten_content(content) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "text":
+                parts.append(item.get("text", ""))
+        return " ".join(parts)
+    return json.dumps(content, sort_keys=True)
+
+
+def render_prompt(messages: list[dict]) -> str:
+    parts: list[str] = []
+    for message in messages:
+        parts.append(f"{message.get('role', 'unknown')}:{flatten_content(message.get('content', ''))}")
+        if message.get("tool_calls"):
+            parts.append(json.dumps(message["tool_calls"], sort_keys=True))
+        if message.get("tool_call_id"):
+            parts.append(f"tool_call_id:{message['tool_call_id']}")
+    return "\n".join(parts)
 
 
 def make_stub_handler(state: StubState):
@@ -74,6 +96,12 @@ def make_stub_handler(state: StubState):
         def do_POST(self):
             content_length = int(self.headers.get("Content-Length", "0"))
             body = json.loads(self.rfile.read(content_length) or "{}")
+
+            if self.path == "/apply-template":
+                with state.lock:
+                    state.template_inputs.append(body)
+                self._send_json(200, {"prompt": render_prompt(body.get("messages", []))})
+                return
 
             if self.path == "/tokenize":
                 content = body.get("content", "")
@@ -167,12 +195,20 @@ def make_stub_handler(state: StubState):
 
 
 class ProxyProcess:
-    def __init__(self, backend_port: int, proxy_port: int, *, trigger: int = 120, hard_cap: int = 160, tail: int = 2):
+    def __init__(self,
+                 backend_port: int,
+                 proxy_port: int,
+                 *,
+                 trigger: int = 120,
+                 hard_cap: int = 160,
+                 tail: int = 2,
+                 model_alias: str | None = "proxy-model"):
         self.backend_port = backend_port
         self.proxy_port = proxy_port
         self.trigger = trigger
         self.hard_cap = hard_cap
         self.tail = tail
+        self.model_alias = model_alias
         self.process: subprocess.Popen | None = None
 
     def start(self):
@@ -181,14 +217,14 @@ class ProxyProcess:
             "--host", "127.0.0.1",
             "--port", str(self.proxy_port),
             "--backend-base-url", f"http://127.0.0.1:{self.backend_port}",
-            "--model-alias", "mistral-nemo-proxy",
-            "--chat-template-file", str(template_file_path()),
             "--compaction-trigger", str(self.trigger),
             "--hard-prompt-cap", str(self.hard_cap),
             "--recent-raw-tail", str(self.tail),
             "--first-summary-target", "40",
             "--second-summary-target", "20",
         ]
+        if self.model_alias is not None:
+            cmd.extend(["--model-alias", self.model_alias])
         self.process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         deadline = time.time() + 10
         while time.time() < deadline:
@@ -246,7 +282,17 @@ def test_models_endpoint_uses_proxy_alias(proxy_env):
     res = requests.get(f"http://127.0.0.1:{proxy.proxy_port}/v1/models", timeout=5)
     assert res.status_code == 200
     body = res.json()
-    assert body["data"][0]["id"] == "mistral-nemo-proxy"
+    assert body["data"][0]["id"] == "proxy-model"
+
+
+def test_proxy_starts_without_template_file_or_backend_key(proxy_env):
+    state, proxy = proxy_env
+    res = requests.get(f"http://127.0.0.1:{proxy.proxy_port}/health", timeout=5)
+    assert res.status_code == 200
+
+    with state.lock:
+        assert state.template_inputs == []
+        assert state.main_requests == []
 
 
 def test_small_chat_passes_through_unchanged(proxy_env):
@@ -257,13 +303,14 @@ def test_small_chat_passes_through_unchanged(proxy_env):
     ]
     res = requests.post(
         f"http://127.0.0.1:{proxy.proxy_port}/v1/chat/completions",
-        json={"model": "mistral-nemo-proxy", "messages": messages},
+        json={"model": "proxy-model", "messages": messages},
         timeout=5,
     )
     assert res.status_code == 200
     assert res.headers["X-Llama-Proxy-Compacted"] == "0"
     with state.lock:
         assert state.summary_requests == 0
+        assert state.template_inputs
         assert state.main_requests[-1]["messages"] == messages
 
 
@@ -278,7 +325,7 @@ def test_large_chat_compacts_and_reuses_cached_summary(proxy_env):
         {"role": "user", "content": long_text("epsilon", 26)},
         {"role": "assistant", "content": long_text("zeta", 26)},
     ]
-    payload = {"model": "mistral-nemo-proxy", "messages": messages}
+    payload = {"model": "proxy-model", "messages": messages}
 
     for _ in range(2):
         res = requests.post(
@@ -291,6 +338,7 @@ def test_large_chat_compacts_and_reuses_cached_summary(proxy_env):
 
     with state.lock:
         assert state.summary_requests == 1
+        assert state.template_inputs
         forwarded = state.main_requests[-1]["messages"]
 
     assert forwarded[0]["role"] == "system"
@@ -320,7 +368,7 @@ def test_recent_tool_chain_is_preserved_during_compaction(proxy_env):
 
     res = requests.post(
         f"http://127.0.0.1:{proxy.proxy_port}/v1/chat/completions",
-        json={"model": "mistral-nemo-proxy", "messages": messages},
+        json={"model": "proxy-model", "messages": messages},
         timeout=5,
     )
     assert res.status_code == 200
@@ -364,7 +412,7 @@ def test_large_recent_tool_result_is_compacted_to_fit_budget():
         ]
         res = requests.post(
             f"http://127.0.0.1:{proxy.proxy_port}/v1/chat/completions",
-            json={"model": "mistral-nemo-proxy", "messages": messages},
+            json={"model": "proxy-model", "messages": messages},
             timeout=5,
         )
         assert res.status_code == 200
@@ -377,6 +425,39 @@ def test_large_recent_tool_result_is_compacted_to_fit_budget():
         tool_msg = next(msg for msg in forwarded if msg.get("role") == "tool")
         assert tool_msg["tool_call_id"] == "call00002"
         assert "[compacted historical tool result]" in tool_msg["content"]
+    finally:
+        proxy.stop()
+        server.shutdown()
+        thread.join(timeout=5)
+
+
+def test_models_and_chat_passthrough_when_proxy_alias_is_unset():
+    state = StubState()
+    backend_port = find_free_port()
+    proxy_port = find_free_port()
+
+    server = ThreadingHTTPServer(("127.0.0.1", backend_port), make_stub_handler(state))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    proxy = ProxyProcess(backend_port, proxy_port, model_alias=None)
+    proxy.start()
+
+    try:
+        models = requests.get(f"http://127.0.0.1:{proxy.proxy_port}/v1/models", timeout=5)
+        assert models.status_code == 200
+        assert models.json()["data"][0]["id"] == "backend-model"
+
+        messages = [{"role": "user", "content": "hello"}]
+        res = requests.post(
+            f"http://127.0.0.1:{proxy.proxy_port}/v1/chat/completions",
+            json={"model": "backend-model", "messages": messages},
+            timeout=5,
+        )
+        assert res.status_code == 200
+
+        with state.lock:
+            assert state.main_requests[-1]["model"] == "backend-model"
     finally:
         proxy.stop()
         server.shutdown()

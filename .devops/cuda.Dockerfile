@@ -85,7 +85,7 @@ FROM base AS server
 
 ENV LLAMA_ARG_HOST=0.0.0.0
 
-COPY --from=build /app/full/llama-server /app
+COPY --from=build /app/full/llama-server /app/full/llama-server-proxy /app
 
 WORKDIR /app
 

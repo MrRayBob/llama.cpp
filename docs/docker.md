@@ -9,7 +9,7 @@ We have three Docker images available for this project:
 
 1. `ghcr.io/ggml-org/llama.cpp:full`: This image includes both the `llama-cli` and `llama-completion` executables and the tools to convert LLaMA models into ggml and convert into 4-bit quantization. (platforms: `linux/amd64`, `linux/arm64`, `linux/s390x`)
 2. `ghcr.io/ggml-org/llama.cpp:light`: This image only includes the `llama-cli` and `llama-completion` executables. (platforms: `linux/amd64`, `linux/arm64`, `linux/s390x`)
-3. `ghcr.io/ggml-org/llama.cpp:server`: This image only includes the `llama-server` executable. (platforms: `linux/amd64`, `linux/arm64`, `linux/s390x`)
+3. `ghcr.io/ggml-org/llama.cpp:server`: This image includes the `llama-server` and `llama-server-proxy` executables, with `llama-server` as the default entrypoint. (platforms: `linux/amd64`, `linux/arm64`, `linux/s390x`)
 
 Additionally, there the following images, similar to the above:
 
@@ -89,7 +89,7 @@ The resulting images, are essentially the same as the non-CUDA images:
 
 1. `local/llama.cpp:full-cuda`: This image includes both the `llama-cli` and `llama-completion` executables and the tools to convert LLaMA models into ggml and convert into 4-bit quantization.
 2. `local/llama.cpp:light-cuda`: This image only includes the `llama-cli` and `llama-completion` executables.
-3. `local/llama.cpp:server-cuda`: This image only includes the `llama-server` executable.
+3. `local/llama.cpp:server-cuda`: This image includes the `llama-server` and `llama-server-proxy` executables, with `llama-server` as the default entrypoint.
 
 ## Usage
 
@@ -99,6 +99,12 @@ After building locally, Usage is similar to the non-CUDA examples, but you'll ne
 docker run --gpus all -v /path/to/models:/models local/llama.cpp:full-cuda --run -m /models/7B/ggml-model-q4_0.gguf -p "Building a website can be done in 10 simple steps:" -n 512 --n-gpu-layers 1
 docker run --gpus all -v /path/to/models:/models local/llama.cpp:light-cuda -m /models/7B/ggml-model-q4_0.gguf -p "Building a website can be done in 10 simple steps:" -n 512 --n-gpu-layers 1
 docker run --gpus all -v /path/to/models:/models local/llama.cpp:server-cuda -m /models/7B/ggml-model-q4_0.gguf --port 8080 --host 0.0.0.0 -n 512 --n-gpu-layers 1
+```
+
+To run the proxy from the same image, override the entrypoint:
+
+```bash
+docker run --gpus all -p 8080:8080 --entrypoint /app/llama-server-proxy local/llama.cpp:server-cuda --host 0.0.0.0
 ```
 
 ## Docker With MUSA

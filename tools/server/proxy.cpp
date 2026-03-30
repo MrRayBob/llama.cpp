@@ -1,5 +1,4 @@
 #include "arg.h"
-#include "chat.h"
 #include "common.h"
 #include "common/http.h"
 #include "log.h"
@@ -14,7 +13,6 @@
 #include <cctype>
 #include <csignal>
 #include <cstdint>
-#include <fstream>
 #include <functional>
 #include <list>
 #include <limits>
@@ -32,9 +30,8 @@
 namespace {
 
 struct proxy_options {
-    std::string backend_base_url = "http://127.0.0.1:8081";
+    std::string backend_base_url = "http://127.0.0.1:8080";
     std::string backend_api_key;
-    std::string chat_template_file = "models/templates/mistralai-Mistral-Nemo-Instruct-2407.jinja";
     std::string model_alias;
     int hard_prompt_cap = 32000;
     int compaction_trigger = 24000;
@@ -94,13 +91,6 @@ private:
     mutable std::mutex mutex_;
     std::list<summary_cache_entry> entries_;
     std::unordered_map<std::string, std::list<summary_cache_entry>::iterator> index_;
-};
-
-struct render_metadata {
-    std::string bos_token;
-    std::string eos_token;
-    std::string backend_template;
-    std::string local_template;
 };
 
 struct compact_attempt {
@@ -199,19 +189,6 @@ static std::string shorten_text(const std::string & text, size_t max_chars) {
     }
 
     return normalized.substr(0, max_chars - 3) + "...";
-}
-
-static std::string read_text_file(const std::string & path) {
-    std::ifstream input(path, std::ios::binary);
-    if (!input) {
-        throw std::runtime_error("failed to open chat template file: " + path);
-    }
-
-    std::string content((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
-    if (content.empty()) {
-        throw std::runtime_error("chat template file is empty: " + path);
-    }
-    return content;
 }
 
 static std::string fnv1a_64_hex(const std::string & input) {
@@ -504,9 +481,7 @@ public:
         , options_(std::move(options))
         , summary_cache_(static_cast<size_t>(options_.summary_cache_capacity)) {}
 
-    void init() {
-        refresh_render_metadata();
-    }
+    void init() {}
 
     server_http_res_ptr handle_health(const server_http_req &) {
         auto res = std::make_unique<server_http_res>();
@@ -572,7 +547,9 @@ public:
         const int rendered_tokens = tokenize_prompt(rendered_prompt);
 
         if (rendered_tokens <= options_.compaction_trigger) {
-            return forward_request(req, /* is_get */ false, safe_json_to_str(body), stream);
+            auto res = forward_request(req, /* is_get */ false, safe_json_to_str(body), stream);
+            res->headers["X-Llama-Proxy-Compacted"] = "0";
+            return res;
         }
 
         auto compacted = compact_request(std::move(body));
@@ -585,15 +562,15 @@ public:
         if (compacted.compacted) {
             compactions_.fetch_add(1);
         }
-        return forward_request(req, /* is_get */ false, safe_json_to_str(compacted.body), stream);
+        auto res = forward_request(req, /* is_get */ false, safe_json_to_str(compacted.body), stream);
+        res->headers["X-Llama-Proxy-Compacted"] = compacted.compacted ? "1" : "0";
+        return res;
     }
 
 private:
     common_params params_;
     proxy_options options_;
     summary_cache summary_cache_;
-    std::mutex metadata_mutex_;
-    std::optional<render_metadata> render_metadata_;
 
     std::atomic<uint64_t> summary_cache_hits_ = 0;
     std::atomic<uint64_t> summary_cache_misses_ = 0;
@@ -753,74 +730,7 @@ private:
         }
     }
 
-    void refresh_render_metadata() {
-        std::lock_guard<std::mutex> lock(metadata_mutex_);
-
-        if (render_metadata_.has_value()) {
-            return;
-        }
-
-        auto [client, parts] = make_backend_client();
-        const std::string path = join_url_path(parts.path, "/props");
-        auto result = client.Get(path.c_str());
-        if (!result) {
-            throw std::runtime_error("failed to read backend /props: " + httplib::to_string(result.error()));
-        }
-        if (result->status >= 400) {
-            throw std::runtime_error("backend /props returned HTTP " + std::to_string(result->status));
-        }
-
-        json props = json::parse(result->body);
-        render_metadata data;
-        data.bos_token = json_value(props, "bos_token", std::string());
-        data.eos_token = json_value(props, "eos_token", std::string());
-        data.backend_template = json_value(props, "chat_template", std::string());
-        data.local_template = read_text_file(options_.chat_template_file);
-
-        if (!data.backend_template.empty() && trim_copy(data.backend_template) != trim_copy(data.local_template)) {
-            LOG_WRN("%s: local chat template does not match backend /props.chat_template, local render may differ\n", __func__);
-        }
-
-        render_metadata_ = std::move(data);
-    }
-
-    render_metadata current_render_metadata() {
-        refresh_render_metadata();
-        std::lock_guard<std::mutex> lock(metadata_mutex_);
-        return *render_metadata_;
-    }
-
-    std::string render_prompt_via_local_template(json body) {
-        auto metadata = current_render_metadata();
-        auto tmpls = common_chat_templates_init(
-            /* model = */ nullptr,
-            metadata.local_template,
-            metadata.bos_token,
-            metadata.eos_token);
-
-        const bool enable_thinking = common_chat_templates_support_enable_thinking(tmpls.get());
-
-        server_chat_params chat_params = {
-            /* use_jinja             */ true,
-            /* prefill_assistant     */ true,
-            /* reasoning_format      */ COMMON_REASONING_FORMAT_DEEPSEEK,
-            /* chat_template_kwargs  */ {},
-            /* tmpls                 */ std::move(tmpls),
-            /* allow_image           */ false,
-            /* allow_audio           */ false,
-            /* enable_thinking       */ enable_thinking,
-            /* reasoning_budget      */ -1,
-            /* reasoning_budget_msg  */ "",
-            /* media_path            */ "",
-            /* force_pure_content    */ false,
-        };
-
-        std::vector<raw_buffer> files;
-        auto parsed = oaicompat_chat_params_parse(body, chat_params, files);
-        return parsed.at("prompt").get<std::string>();
-    }
-
-    std::string render_prompt_via_backend(const json & body) const {
+    std::string render_prompt(const json & body) const {
         auto [client, parts] = make_backend_client();
         const auto path = join_url_path(parts.path, "/apply-template");
         const auto headers = copy_request_headers({}, options_.backend_api_key);
@@ -834,15 +744,6 @@ private:
 
         json rendered = json::parse(result->body);
         return rendered.at("prompt").get<std::string>();
-    }
-
-    std::string render_prompt(json body) {
-        try {
-            return render_prompt_via_local_template(body);
-        } catch (const std::exception & e) {
-            LOG_WRN("%s: local template render failed, falling back to backend /apply-template: %s\n", __func__, e.what());
-            return render_prompt_via_backend(body);
-        }
     }
 
     int tokenize_prompt(const std::string & prompt) const {
@@ -1024,9 +925,9 @@ private:
 static void print_proxy_usage(char ** argv) {
     LOG("\nusage: %s [proxy options] [llama-server HTTP options]\n", argv[0]);
     LOG("\nproxy options:\n");
-    LOG("  --backend-base-url URL         backend llama-server base URL (default: http://127.0.0.1:8081)\n");
+    LOG("  --backend-base-url URL         backend llama-server base URL (default: http://127.0.0.1:8080)\n");
     LOG("  --backend-api-key KEY          backend Authorization bearer token\n");
-    LOG("  --chat-template-file PATH      local chat template used for prompt budgeting\n");
+    LOG("  --chat-template-file PATH      deprecated, ignored (proxy uses backend /apply-template)\n");
     LOG("  --model-alias NAME             model alias to inject into proxied chat requests\n");
     LOG("  --hard-prompt-cap N            max rendered prompt tokens after compaction (default: 32000)\n");
     LOG("  --compaction-trigger N         trigger compaction above this rendered token count (default: 24000)\n");
@@ -1069,7 +970,8 @@ static bool parse_proxy_args(int argc,
             continue;
         }
         if (arg == "--chat-template-file") {
-            options.chat_template_file = require_value(i, "--chat-template-file");
+            const char * ignored = require_value(i, "--chat-template-file");
+            LOG_WRN("%s: ignoring deprecated --chat-template-file=%s, proxy now renders via backend /apply-template\n", __func__, ignored);
             continue;
         }
         if (arg == "--model-alias") {
