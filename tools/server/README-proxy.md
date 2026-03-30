@@ -8,7 +8,7 @@ The split is intentional: the backend remains a plain inference server, while th
 
 The default deployment now targets `Mistral Nemo`:
 
-- backend model: `bartowski/Mistral-Nemo-Instruct-2407-GGUF:IQ3_M`
+- backend model: `bartowski/Mistral-Nemo-Instruct-2407-GGUF:Q3_K_M`
 - public model alias: `mistral-nemo-32k`
 - one public API key on the proxy only
 
@@ -57,7 +57,7 @@ If you want to run the two services without Compose, keep the same split:
 
 ```sh
 ./build/bin/llama-server \
-  -hf bartowski/Mistral-Nemo-Instruct-2407-GGUF:IQ3_M \
+  -hf bartowski/Mistral-Nemo-Instruct-2407-GGUF:Q3_K_M \
   -a mistral-nemo-32k \
   -fa on \
   -c 32768 \
@@ -78,7 +78,7 @@ Expose the proxy, not the backend.
 
 ## Alternative profile
 
-If `IQ3_M` is unavailable for your hardware or preferred repo, switch the backend model to `Q3_K_M` or another Nemo quant. If you later switch back to a model that needs a template override, that is a backend-only change; the proxy does not need to change.
+If you want a different Nemo quant, change the backend model string in the Compose file or manual command. If you later switch back to a model that needs a template override, that is a backend-only change; the proxy does not need to change.
 
 ## Notes
 

@@ -18,18 +18,18 @@ services:
     entrypoint: ["/app/llama-server"]
     command:
       - -hf
-      - ${LLAMA_HF_MODEL:-bartowski/Mistral-Nemo-Instruct-2407-GGUF:IQ3_M}
+      - bartowski/Mistral-Nemo-Instruct-2407-GGUF:Q3_K_M
       - -a
-      - ${MODEL_ALIAS:-mistral-nemo-32k}
+      - mistral-nemo-32k
       - -fa
       - on
       - -c
-      - "${BACKEND_CTX_SIZE:-32768}"
+      - "32768"
       - --context-shift
       - -ctk
-      - ${BACKEND_CTK:-pq3_5}
+      - pq3_5
       - -ctv
-      - ${BACKEND_CTV:-q8_0}
+      - q8_0
       - --host
       - 0.0.0.0
     volumes:
@@ -39,7 +39,7 @@ services:
       interval: 30s
       timeout: 5s
       retries: 10
-      start_period: 60s
+      start_period: 15m
 
   proxy:
     <<: *llama-image
