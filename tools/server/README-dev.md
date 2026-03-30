@@ -4,6 +4,8 @@ This document provides an in-depth technical overview of `llama-server`, intende
 
 If you are an end user consuming `llama-server` as a product, please refer to the main [README](./README.md) instead.
 
+For the standalone chat-compaction proxy that fronts a private `llama-server`, see [README-proxy.md](./README-proxy.md).
+
 ## Scope of features
 
 In-scope types of feature:
@@ -124,6 +126,12 @@ Here is an example trace of an API request for text completion:
 The framework automatically starts a `llama-server` instance, sends requests, and validates responses.
 
 For detailed instructions, see the [test documentation](./tests/README.md).
+
+### OpenAI Proxy Compaction
+
+History compaction for long OpenAI-compatible chats lives in the separate `llama-server-proxy` tool, not in `llama-server` itself. This keeps prompt rewriting and summarization outside the backend inference server.
+
+For configuration and example launch commands, see [README-proxy.md](./README-proxy.md).
 
 ### API for tools
 

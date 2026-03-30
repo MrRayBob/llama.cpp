@@ -38,6 +38,8 @@ set(TARGET_SRCS
     server-models.h
 )
 
+set(SERVER_HTTP_GENERATED_SRCS)
+
 option(LLAMA_BUILD_WEBUI "Build the embedded Web UI" ON)
 
 if (LLAMA_BUILD_WEBUI)
@@ -50,6 +52,7 @@ if (LLAMA_BUILD_WEBUI)
         set(input "${CMAKE_CURRENT_SOURCE_DIR}/public/${asset}")
         set(output "${CMAKE_CURRENT_BINARY_DIR}/${asset}.hpp")
         list(APPEND TARGET_SRCS ${output})
+        list(APPEND SERVER_HTTP_GENERATED_SRCS ${output})
         add_custom_command(
             DEPENDS "${input}"
             OUTPUT "${output}"
@@ -62,6 +65,24 @@ else()
 endif()
 
 add_executable(${TARGET} ${TARGET_SRCS})
+install(TARGETS ${TARGET} RUNTIME)
+
+target_include_directories(${TARGET} PRIVATE ../mtmd)
+target_include_directories(${TARGET} PRIVATE ${CMAKE_SOURCE_DIR})
+target_link_libraries(${TARGET} PRIVATE server-context PUBLIC common cpp-httplib ${CMAKE_THREAD_LIBS_INIT})
+
+target_compile_features(${TARGET} PRIVATE cxx_std_17)
+
+
+# llama-server-proxy executable
+
+set(TARGET llama-server-proxy)
+
+add_executable(${TARGET}
+    proxy.cpp
+    server-http.cpp
+    ${SERVER_HTTP_GENERATED_SRCS}
+)
 install(TARGETS ${TARGET} RUNTIME)
 
 target_include_directories(${TARGET} PRIVATE ../mtmd)
