@@ -10,7 +10,7 @@ x-llama-image: &llama-image
 services:
   backend:
     <<: *llama-image
-    container_name: llama-command-r7b-backend
+    container_name: llama-nemo-backend
     restart: unless-stopped
     gpus: all
     environment:
@@ -18,25 +18,22 @@ services:
     entrypoint: ["/app/llama-server"]
     command:
       - -hf
-      - ${LLAMA_HF_MODEL:-bartowski/c4ai-command-r7b-12-2024-GGUF:Q4_K_M}
-      - --chat-template-file
-      - /config/command-r7b-tool_use.jinja
+      - ${LLAMA_HF_MODEL:-bartowski/Mistral-Nemo-Instruct-2407-GGUF:IQ3_M}
       - -a
-      - ${MODEL_ALIAS:-command-r7b}
+      - ${MODEL_ALIAS:-mistral-nemo-32k}
       - -fa
       - on
       - -c
-      - "${BACKEND_CTX_SIZE:-8192}"
+      - "${BACKEND_CTX_SIZE:-32768}"
       - --context-shift
       - -ctk
-      - ${BACKEND_CTK:-q8_0}
+      - ${BACKEND_CTK:-pq3_5}
       - -ctv
       - ${BACKEND_CTV:-q8_0}
       - --host
       - 0.0.0.0
     volumes:
       - ${HF_CACHE_DIR}:/root/.cache/huggingface
-      - ${TEMPLATE_FILE}:/config/command-r7b-tool_use.jinja:ro
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
       interval: 30s
@@ -46,7 +43,7 @@ services:
 
   proxy:
     <<: *llama-image
-    container_name: llama-command-r7b-proxy
+    container_name: llama-nemo-proxy
     restart: unless-stopped
     depends_on:
       backend:

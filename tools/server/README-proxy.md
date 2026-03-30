@@ -6,14 +6,13 @@ The split is intentional: the backend remains a plain inference server, while th
 
 ## Default profile
 
-The default deployment targets the same `Command-R` tool-use setup that previously worked with plain `llama-server`:
+The default deployment now targets `Mistral Nemo`:
 
-- backend model: `bartowski/c4ai-command-r7b-12-2024-GGUF:Q4_K_M`
-- backend-only template override: `CohereForAI-c4ai-command-r7b-12-2024-tool_use.jinja`
-- public model alias: `command-r7b`
+- backend model: `bartowski/Mistral-Nemo-Instruct-2407-GGUF:IQ3_M`
+- public model alias: `mistral-nemo-32k`
 - one public API key on the proxy only
 
-The proxy no longer needs a mounted template file. Prompt budgeting now uses backend `POST /apply-template` and `POST /tokenize`, so the backend is the single source of truth for template rendering.
+The backend uses the model's built-in chat template. The proxy does not need any mounted template file. Prompt budgeting uses backend `POST /apply-template` and `POST /tokenize`, so the backend is the single source of truth for template rendering.
 
 ## Docker Compose
 
@@ -34,7 +33,6 @@ docker compose -f docker-compose.proxy.yml up -d --build
 Edit only these values in `.env` for the default path:
 
 - `HF_CACHE_DIR`
-- `TEMPLATE_FILE`
 - `PUBLIC_API_KEY`
 - optional: `HF_TOKEN`
 - optional: `TS_IP`
@@ -59,13 +57,12 @@ If you want to run the two services without Compose, keep the same split:
 
 ```sh
 ./build/bin/llama-server \
-  -hf bartowski/c4ai-command-r7b-12-2024-GGUF:Q4_K_M \
-  --chat-template-file /path/to/CohereForAI-c4ai-command-r7b-12-2024-tool_use.jinja \
-  -a command-r7b \
+  -hf bartowski/Mistral-Nemo-Instruct-2407-GGUF:IQ3_M \
+  -a mistral-nemo-32k \
   -fa on \
-  -c 8192 \
+  -c 32768 \
   --context-shift \
-  -ctk q8_0 \
+  -ctk pq3_5 \
   -ctv q8_0 \
   --host 127.0.0.1
 ```
@@ -81,7 +78,7 @@ Expose the proxy, not the backend.
 
 ## Alternative profile
 
-If you switch to a native-template model such as Mistral Nemo, you can usually drop the backend `--chat-template-file` override as well. The proxy does not need to change for that case.
+If `IQ3_M` is unavailable for your hardware or preferred repo, switch the backend model to `Q3_K_M` or another Nemo quant. If you later switch back to a model that needs a template override, that is a backend-only change; the proxy does not need to change.
 
 ## Notes
 
