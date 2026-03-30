@@ -2,6 +2,8 @@
 
 `llama-server-proxy` is a small OpenAI-compatible HTTP proxy that sits in front of a private `llama-server` instance and compacts oversized chat histories before forwarding them upstream.
 
+The split is intentional: the backend remains a plain inference server, while the proxy owns prompt rewriting, budgeting, and summary caching. You can run both processes in one container with a supervisor, but that still leaves you with two long-lived processes and more brittle startup/logging. A two-service Docker Compose setup is the simpler operational shape.
+
 ## Scope
 
 - Public endpoints:
@@ -46,6 +48,35 @@ Then expose the proxy instead of the backend:
   --recent-raw-tail 8 \
   --first-summary-target 800 \
   --second-summary-target 400
+```
+
+## Docker Compose
+
+For Docker-based deployment, use:
+
+- [docker-compose.proxy.yml](./docker-compose.proxy.yml)
+- [proxy-compose.env.example](./proxy-compose.env.example)
+
+Quick start:
+
+```sh
+cd tools/server
+cp proxy-compose.env.example .env
+# edit .env
+docker compose -f docker-compose.proxy.yml up -d --build
+```
+
+This starts:
+
+- `backend`: private `llama-server` on the internal Compose network
+- `proxy`: public `llama-server-proxy` on `${TS_IP}:8080`
+
+Useful commands:
+
+```sh
+docker compose -f docker-compose.proxy.yml logs -f backend
+docker compose -f docker-compose.proxy.yml logs -f proxy
+docker compose -f docker-compose.proxy.yml down
 ```
 
 ## Notes

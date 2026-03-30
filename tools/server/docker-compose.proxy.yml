@@ -1,0 +1,100 @@
+name: llama-server-proxy
+
+x-llama-image: &llama-image
+  image: local/llama.cpp:server-cuda-proxy
+  build:
+    context: ../..
+    dockerfile: .devops/cuda.Dockerfile
+    target: full
+
+services:
+  backend:
+    <<: *llama-image
+    container_name: llama-nemo-backend
+    restart: unless-stopped
+    gpus: all
+    environment:
+      HF_TOKEN: ${HF_TOKEN}
+    entrypoint: ["/app/llama-server"]
+    command:
+      - -hf
+      - ${LLAMA_HF_MODEL:-bartowski/Mistral-Nemo-Instruct-2407-GGUF:IQ3_M}
+      - --jinja
+      - --chat-template-file
+      - /config/nemo.jinja
+      - -a
+      - ${MODEL_ALIAS:-mistral-nemo-32k}
+      - -fa
+      - on
+      - -c
+      - "${BACKEND_CTX_SIZE:-32768}"
+      - -np
+      - "1"
+      - --context-shift
+      - -ctk
+      - ${BACKEND_CTK:-pq3_5}
+      - -ctv
+      - ${BACKEND_CTV:-q8_0}
+      - -ngl
+      - ${N_GPU_LAYERS:-auto}
+      - -fit
+      - on
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8081"
+      - --api-key
+      - ${BACKEND_API_KEY}
+    volumes:
+      - ${HF_CACHE_DIR}:/root/.cache/huggingface
+      - ${TEMPLATE_FILE}:/config/nemo.jinja:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+  proxy:
+    <<: *llama-image
+    container_name: llama-nemo-proxy
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    entrypoint: ["/app/llama-server-proxy"]
+    command:
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --backend-base-url
+      - http://backend:8081
+      - --backend-api-key
+      - ${BACKEND_API_KEY}
+      - --chat-template-file
+      - /config/nemo.jinja
+      - --model-alias
+      - ${MODEL_ALIAS:-mistral-nemo-32k}
+      - --compaction-trigger
+      - "${COMPACTION_TRIGGER:-24000}"
+      - --hard-prompt-cap
+      - "${HARD_PROMPT_CAP:-32000}"
+      - --recent-raw-tail
+      - "${RECENT_RAW_TAIL:-8}"
+      - --first-summary-target
+      - "${FIRST_SUMMARY_TARGET:-800}"
+      - --second-summary-target
+      - "${SECOND_SUMMARY_TARGET:-400}"
+      - --api-key
+      - ${PUBLIC_API_KEY}
+    ports:
+      - "${TS_IP:-127.0.0.1}:8080:8080"
+    volumes:
+      - ${TEMPLATE_FILE}:/config/nemo.jinja:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
