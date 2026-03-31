@@ -42,12 +42,27 @@ Edit only these values in `.env` for the default path:
 - `PUBLIC_API_KEY`
 - optional: `HF_TOKEN`
 - optional: `TS_IP`
+- optional proxy budgeting knobs (`HARD_PROMPT_CAP`, `COMPACTION_TRIGGER`)
 - optional tuning knobs (`MODEL_REF`, `N_CTX`, `N_BATCH`, etc.)
 
 This starts:
 
 - `backend`: private `llama-server` on the internal Compose network
 - `proxy`: public `llama-server-proxy` on `${TS_IP}:8080`
+
+The compose file passes the proxy prompt-budget limits from `.env`:
+
+- `HARD_PROMPT_CAP` maps to `--hard-prompt-cap`
+- `COMPACTION_TRIGGER` maps to `--compaction-trigger`
+
+For a larger backend context, raise these together. Example 64k profile:
+
+```env
+MODEL_ALIAS=mistral-nemo-64k
+N_CTX=65536
+HARD_PROMPT_CAP=64000
+COMPACTION_TRIGGER=48000
+```
 
 Useful commands:
 

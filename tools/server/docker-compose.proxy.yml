@@ -68,6 +68,10 @@ services:
       - http://backend:8080
       - --api-key
       - ${PUBLIC_API_KEY}
+      - --hard-prompt-cap
+      - "${HARD_PROMPT_CAP:-32000}"
+      - --compaction-trigger
+      - "${COMPACTION_TRIGGER:-24000}"
     ports:
       - "${TS_IP:-127.0.0.1}:8080:8080"
     healthcheck:
