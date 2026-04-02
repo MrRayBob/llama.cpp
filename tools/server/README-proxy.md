@@ -15,7 +15,7 @@ The default deployment now runs `llama-server` in router mode on an 8 GB class G
 
 The backend uses router autoload. The first request for a model loads it automatically, `MODELS_MAX=1` ensures only one model stays active at a time, and `SLEEP_IDLE_SECONDS=1800` makes the active child destroy its model/context after 30 minutes idle so VRAM returns to empty.
 
-Prompt budgeting still uses backend `POST /apply-template` and `POST /tokenize`, so the backend remains the single source of truth for template rendering. Because the default bundle mixes 32k and 16k models, the proxy defaults are sized to the smallest model context, not Nemo's maximum.
+Prompt budgeting still uses backend `POST /apply-template` and `POST /tokenize`, so the backend remains the single source of truth for template rendering. The mixed bundle now uses 32k router contexts across all three models, which is enough for larger editor prompts while staying much more practical on 8 GB hardware than a blanket 128k default.
 
 For 8 GB VRAM systems, the compose defaults are tuned to maximize fit reliability while keeping decode work on GPU:
 
@@ -59,7 +59,7 @@ The compose file passes the proxy prompt-budget limits from `.env`:
 - `HARD_PROMPT_CAP` maps to `--hard-prompt-cap`
 - `COMPACTION_TRIGGER` maps to `--compaction-trigger`
 
-The default `14000` / `10500` pair is safe for the 16k Gemma/Qwen presets. If you only serve Nemo and want a larger prompt budget, raise these together. Example Nemo-only 32k profile:
+The default `32000` / `24000` pair is safe for the current 32k bundle. If you only serve Nemo or Gemma and want to experiment with a longer context profile, raise these together and increase the matching `ctx-size` in `router-models.ini`.
 
 ```env
 HARD_PROMPT_CAP=32000
