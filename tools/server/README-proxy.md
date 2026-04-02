@@ -6,14 +6,18 @@ The split is intentional: the backend remains a plain inference server, while th
 
 ## Default profile
 
-The default deployment now targets `Mistral Nemo` on an 8 GB class GPU with a performance-first 32k profile:
+The default deployment now runs `llama-server` in router mode on an 8 GB class GPU with three on-demand models:
 
-- backend model: `bartowski/Mistral-Nemo-Instruct-2407-GGUF:Q2_K`
-- public model alias: `mistral-nemo-32k`
+- `gemma4-4b-instruct` -> `ggml-org/gemma-4-E4B-it-GGUF:Q4_K_M`
+- `mistral-nemo-12b-instruct` -> `bartowski/Mistral-Nemo-Instruct-2407-GGUF:Q2_K`
+- `qwen-coder-7b-instruct` -> `bartowski/Qwen2.5-Coder-7B-Instruct-GGUF:Q4_K_M`
 - one public API key on the proxy only
 
-The backend uses the model's built-in chat template. The proxy does not need any mounted template file. Prompt budgeting uses backend `POST /apply-template` and `POST /tokenize`, so the backend is the single source of truth for template rendering.
-For 8 GB VRAM systems, the compose defaults are tuned to maximize usable context while keeping decode speed on GPU:
+The backend uses router autoload. The first request for a model loads it automatically, `MODELS_MAX=1` ensures only one model stays active at a time, and `SLEEP_IDLE_SECONDS=1800` makes the active child destroy its model/context after 30 minutes idle so VRAM returns to empty.
+
+Prompt budgeting still uses backend `POST /apply-template` and `POST /tokenize`, so the backend remains the single source of truth for template rendering. Because the default bundle mixes 32k and 16k models, the proxy defaults are sized to the smallest model context, not Nemo's maximum.
+
+For 8 GB VRAM systems, the compose defaults are tuned to maximize fit reliability while keeping decode work on GPU:
 
 - `-ctk pq3_5 -ctv q8_0` compresses KV cache heavily while preserving GPU KV execution.
 - `-fit on -fitt 256` allows tighter VRAM packing than the default 1024 MiB margin.
@@ -43,11 +47,11 @@ Edit only these values in `.env` for the default path:
 - optional: `HF_TOKEN`
 - optional: `TS_IP`
 - optional proxy budgeting knobs (`HARD_PROMPT_CAP`, `COMPACTION_TRIGGER`)
-- optional tuning knobs (`MODEL_REF`, `N_CTX`, `N_BATCH`, etc.)
+- optional runtime knobs (`MODELS_MAX`, `SLEEP_IDLE_SECONDS`, `N_BATCH`, etc.)
 
 This starts:
 
-- `backend`: private `llama-server` on the internal Compose network
+- `backend`: private router-mode `llama-server` on the internal Compose network
 - `proxy`: public `llama-server-proxy` on `${TS_IP}:8080`
 
 The compose file passes the proxy prompt-budget limits from `.env`:
@@ -55,13 +59,11 @@ The compose file passes the proxy prompt-budget limits from `.env`:
 - `HARD_PROMPT_CAP` maps to `--hard-prompt-cap`
 - `COMPACTION_TRIGGER` maps to `--compaction-trigger`
 
-For a larger backend context, raise these together. Example 64k profile:
+The default `14000` / `10500` pair is safe for the 16k Gemma/Qwen presets. If you only serve Nemo and want a larger prompt budget, raise these together. Example Nemo-only 32k profile:
 
 ```env
-MODEL_ALIAS=mistral-nemo-64k
-N_CTX=65536
-HARD_PROMPT_CAP=64000
-COMPACTION_TRIGGER=48000
+HARD_PROMPT_CAP=32000
+COMPACTION_TRIGGER=24000
 ```
 
 Useful commands:
@@ -79,10 +81,10 @@ If you want to run the two services without Compose, keep the same split:
 
 ```sh
 ./build/bin/llama-server \
-  -hf bartowski/Mistral-Nemo-Instruct-2407-GGUF:Q2_K \
-  -a mistral-nemo-32k \
+  --models-preset ./tools/server/router-models.ini \
+  --models-max 1 \
+  --sleep-idle-seconds 1800 \
   -fa on \
-  -c 32768 \
   -np 1 \
   -fit on \
   -fitt 256 \
@@ -92,7 +94,8 @@ If you want to run the two services without Compose, keep the same split:
   --context-shift \
   -ctk pq3_5 \
   -ctv q8_0 \
-  --host 127.0.0.1
+  --host 127.0.0.1 \
+  --port 8080
 ```
 
 ```sh
@@ -104,9 +107,19 @@ If you want to run the two services without Compose, keep the same split:
 
 Expose the proxy, not the backend.
 
-## Alternative profile
+Example request:
 
-If you want a different Nemo quant, change `MODEL_REF` in `.env` (or the backend model string in the Compose file / manual command). If you later switch back to a model that needs a template override, that is a backend-only change; the proxy does not need to change.
+```sh
+curl http://127.0.0.1:8080/v1/chat/completions \
+  -H "Authorization: Bearer replace-with-a-long-random-public-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "qwen-coder-7b-instruct",
+    "messages": [{"role": "user", "content": "Write a tiny HTTP server in C."}]
+  }'
+```
+
+The same `model` field can be set to `gemma4-4b-instruct` or `mistral-nemo-12b-instruct`. The first request autoloads that model. `GET /models` then reports `loaded`, `unloaded`, or `sleeping` for each preset.
 
 ## Memory-first tuning for 8 GB VRAM
 
@@ -115,15 +128,16 @@ If the backend still fails health checks:
 1. Keep `N_PARALLEL=1`.
 2. Lower `FIT_TARGET_MIB` from `256` to `128` (more aggressive fitting).
 3. Reduce `N_BATCH` to `512` and `N_UBATCH` to `128`.
-4. Reduce `N_CTX` to `24576` or `16384` if needed.
+4. Reduce the per-model `ctx-size` values in `router-models.ini` if needed.
 5. If fitting still pushes any layer off CUDA, switch to `KV_CACHE_K_TYPE=q4_0` and `KV_CACHE_V_TYPE=q4_0`.
 6. As a last resort, set `N_GPU_LAYERS=auto`.
 
-This path favors GPU-backed decode performance and relies on proxy compaction to keep long conversations usable.
+This path favors GPU-backed decode performance while keeping the single loaded model small enough to fit and unload cleanly.
 
 ## Notes
 
 - Chat requests are only rewritten when the rendered prompt crosses the configured compaction trigger.
 - Older context is collapsed into a synthetic memory block, while recent raw turns stay verbatim.
 - Summary results are cached in an in-memory LRU keyed by the compacted prefix.
+- `--hf-repo` defaults to `Q4_K_M` and automatically downloads `mmproj` files when present, which is why the Gemma 4 preset does not need a separate projector path.
 - This repository does not currently include a `TurboQuant` runtime flag in `llama-server`; the compose profile therefore uses the most VRAM-efficient upstream KV settings currently available (`pq3_5`/`q8_0`).

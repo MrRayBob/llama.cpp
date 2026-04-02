@@ -10,17 +10,21 @@ x-llama-image: &llama-image
 services:
   backend:
     <<: *llama-image
-    container_name: llama-nemo-backend
+    container_name: llama-router-backend
     restart: unless-stopped
     gpus: all
     environment:
       HF_TOKEN: ${HF_TOKEN:-}
     entrypoint: ["/app/llama-server"]
     command:
-      - -hf
-      - ${MODEL_REF:-bartowski/Mistral-Nemo-Instruct-2407-GGUF:Q2_K}
-      - -a
-      - ${MODEL_ALIAS:-mistral-nemo-32k}
+      - --host
+      - 0.0.0.0
+      - --models-preset
+      - /config/models.ini
+      - --models-max
+      - "${MODELS_MAX:-1}"
+      - --sleep-idle-seconds
+      - "${SLEEP_IDLE_SECONDS:-1800}"
       - -fa
       - on
       - -fit
@@ -29,8 +33,6 @@ services:
       - "${FIT_TARGET_MIB:-256}"
       - -ngl
       - "${N_GPU_LAYERS:-all}"
-      - -c
-      - "${N_CTX:-32768}"
       - -np
       - "${N_PARALLEL:-1}"
       - -b
@@ -42,10 +44,9 @@ services:
       - ${KV_CACHE_K_TYPE:-pq3_5}
       - -ctv
       - ${KV_CACHE_V_TYPE:-q8_0}
-      - --host
-      - 0.0.0.0
     volumes:
       - ${HF_CACHE_DIR}:/root/.cache/huggingface
+      - ./router-models.ini:/config/models.ini:ro
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
       interval: 30s
@@ -55,7 +56,7 @@ services:
 
   proxy:
     <<: *llama-image
-    container_name: llama-nemo-proxy
+    container_name: llama-router-proxy
     restart: unless-stopped
     depends_on:
       backend:
@@ -69,9 +70,9 @@ services:
       - --api-key
       - ${PUBLIC_API_KEY}
       - --hard-prompt-cap
-      - "${HARD_PROMPT_CAP:-32000}"
+      - "${HARD_PROMPT_CAP:-14000}"
       - --compaction-trigger
-      - "${COMPACTION_TRIGGER:-24000}"
+      - "${COMPACTION_TRIGGER:-10500}"
     ports:
       - "${TS_IP:-127.0.0.1}:8080:8080"
     healthcheck:
