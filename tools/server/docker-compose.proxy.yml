@@ -41,7 +41,7 @@ services:
       - "${N_UBATCH:-256}"
       - --context-shift
       - -ctk
-      - ${KV_CACHE_K_TYPE:-pq3_5}
+      - ${KV_CACHE_K_TYPE:-q4_0}
       - -ctv
       - ${KV_CACHE_V_TYPE:-q8_0}
     volumes:

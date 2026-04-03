@@ -19,7 +19,7 @@ Prompt budgeting still uses backend `POST /apply-template` and `POST /tokenize`,
 
 For 8 GB VRAM systems, the compose defaults are tuned to maximize fit reliability while keeping decode work on GPU:
 
-- `-ctk pq3_5 -ctv q8_0` compresses KV cache heavily while preserving GPU KV execution.
+- `-ctk q4_0 -ctv q8_0` keeps KV cache compact while remaining compatible with Gemma 4.
 - `-fit on -fitt 256` allows tighter VRAM packing than the default 1024 MiB margin.
 - `-ngl all` keeps as many layers on GPU as possible (subject to fit safety checks).
 - `-np 1` avoids extra slot-related KV allocations.
@@ -92,7 +92,7 @@ If you want to run the two services without Compose, keep the same split:
   -b 1024 \
   -ub 256 \
   --context-shift \
-  -ctk pq3_5 \
+  -ctk q4_0 \
   -ctv q8_0 \
   --host 127.0.0.1 \
   --port 8080
@@ -140,4 +140,4 @@ This path favors GPU-backed decode performance while keeping the single loaded m
 - Older context is collapsed into a synthetic memory block, while recent raw turns stay verbatim.
 - Summary results are cached in an in-memory LRU keyed by the compacted prefix.
 - `--hf-repo` defaults to `Q4_K_M` and automatically downloads `mmproj` files when present, which is why the Gemma 4 preset does not need a separate projector path.
-- This repository does not currently include a `TurboQuant` runtime flag in `llama-server`; the compose profile therefore uses the most VRAM-efficient upstream KV settings currently available (`pq3_5`/`q8_0`).
+- Gemma 4 uses `n_embd_head_k = 512` in some layers, so it cannot run with `pq3_5` K-cache. The compose profile therefore defaults to `q4_0`/`q8_0` for mixed-router compatibility.
