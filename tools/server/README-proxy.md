@@ -108,7 +108,7 @@ Then recreate only the proxy service:
 docker compose -f docker-compose.proxy.yml up -d --build proxy
 ```
 
-That rebuilds and restarts the lightweight proxy container only. The backend container, including any currently loaded model, stays up.
+That restarts only the proxy container. In the current Compose layout both services share the same Docker image, so `--build proxy` still recompiles the shared image, but the backend container, including any currently loaded model, stays up unless you recreate it too.
 
 If your MCP server already sends browser-compatible CORS headers for the Web UI origin, you can leave `WEBUI_MCP_PROXY=0` and turn the proxy toggle off in the UI instead.
 
