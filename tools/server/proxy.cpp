@@ -3,6 +3,7 @@
 #include "common/http.h"
 #include "log.h"
 #include "server-common.h"
+#include "server-cors-proxy.h"
 #include "server-http.h"
 
 #include <cpp-httplib/httplib.h>
@@ -1133,6 +1134,14 @@ int main(int argc, char ** argv) {
     ctx_http.post("/lora-adapters",       ex_wrapper([&](const server_http_req & req) { return proxy.handle_passthrough_post(req); }));
     ctx_http.get ("/slots",               ex_wrapper([&](const server_http_req & req) { return proxy.handle_passthrough_get(req); }));
     ctx_http.post("/slots/:id_slot",      ex_wrapper([&](const server_http_req & req) { return proxy.handle_passthrough_post(req); }));
+    if (params.webui_mcp_proxy) {
+        LOG_WRN("%s", "-----------------\n");
+        LOG_WRN("%s", "CORS proxy is enabled, do not expose server to untrusted environments\n");
+        LOG_WRN("%s", "This feature is EXPERIMENTAL and may be removed or changed in future versions\n");
+        LOG_WRN("%s", "-----------------\n");
+        ctx_http.get ("/cors-proxy",      ex_wrapper(proxy_handler_get));
+        ctx_http.post("/cors-proxy",      ex_wrapper(proxy_handler_post));
+    }
 
     if (!ctx_http.start()) {
         LOG_ERR("%s: failed to start HTTP server\n", __func__);

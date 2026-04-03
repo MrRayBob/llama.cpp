@@ -44,6 +44,8 @@ services:
     <<: *llama-image
     container_name: llama-router-proxy
     restart: unless-stopped
+    environment:
+      LLAMA_ARG_WEBUI_MCP_PROXY: ${WEBUI_MCP_PROXY:-0}
     depends_on:
       backend:
         condition: service_healthy

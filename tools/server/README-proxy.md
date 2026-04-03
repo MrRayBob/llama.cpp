@@ -51,6 +51,7 @@ Edit only these values in `.env` for the default path:
 
 - `HF_CACHE_DIR`
 - `PUBLIC_API_KEY`
+- optional: `WEBUI_MCP_PROXY`
 - optional: `HF_TOKEN`
 - optional: `TS_IP`
 - optional proxy budgeting knobs (`*_HARD_PROMPT_CAP`, `*_COMPACTION_TRIGGER`)
@@ -90,6 +91,26 @@ docker compose -f docker-compose.proxy.yml logs -f proxy
 docker compose -f docker-compose.proxy.yml ps
 docker compose -f docker-compose.proxy.yml down
 ```
+
+## Web UI MCP servers
+
+If you add browser-based MCP servers in the Web UI and enable the card's proxy toggle, the public process serving the UI must expose `/cors-proxy`.
+
+In this mixed deployment, the public process is `llama-server-proxy`, not the private backend. Enable it by setting:
+
+```env
+WEBUI_MCP_PROXY=1
+```
+
+Then recreate only the proxy service:
+
+```sh
+docker compose -f docker-compose.proxy.yml up -d --build proxy
+```
+
+That rebuilds and restarts the lightweight proxy container only. The backend container, including any currently loaded model, stays up.
+
+If your MCP server already sends browser-compatible CORS headers for the Web UI origin, you can leave `WEBUI_MCP_PROXY=0` and turn the proxy toggle off in the UI instead.
 
 ## Manual fallback
 
