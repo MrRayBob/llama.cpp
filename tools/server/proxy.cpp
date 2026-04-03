@@ -35,6 +35,8 @@ struct proxy_options {
     std::string model_alias;
     int hard_prompt_cap = 32000;
     int compaction_trigger = 24000;
+    std::unordered_map<std::string, int> model_hard_prompt_caps;
+    std::unordered_map<std::string, int> model_compaction_triggers;
     int recent_raw_tail = 8;
     int first_summary_target = 800;
     int second_summary_target = 400;
@@ -490,6 +492,8 @@ public:
             {"backend_base_url", common_http_show_masked_url(common_http_parse_url(options_.backend_base_url))},
             {"compaction_trigger", options_.compaction_trigger},
             {"hard_prompt_cap", options_.hard_prompt_cap},
+            {"model_compaction_triggers", options_.model_compaction_triggers},
+            {"model_hard_prompt_caps", options_.model_hard_prompt_caps},
             {"recent_raw_tail", options_.recent_raw_tail},
             {"summary_cache", {
                 {"entries", summary_cache_.size()},
@@ -542,19 +546,23 @@ public:
             body["model"] = options_.model_alias;
         }
         const std::string model_name = json_value(body, "model", std::string());
+        const int compaction_trigger = select_compaction_trigger(model_name);
+        const int hard_prompt_cap = select_hard_prompt_cap(model_name);
 
         const bool stream = json_value(body, "stream", false);
         auto rendered_prompt = render_prompt(body);
         const int rendered_tokens = tokenize_prompt(rendered_prompt, model_name);
 
-        if (rendered_tokens <= options_.compaction_trigger) {
+        if (rendered_tokens <= compaction_trigger) {
             auto res = forward_request(req, /* is_get */ false, safe_json_to_str(body), stream);
             res->headers["X-Llama-Proxy-Compacted"] = "0";
+            res->headers["X-Llama-Proxy-Compaction-Trigger"] = std::to_string(compaction_trigger);
+            res->headers["X-Llama-Proxy-Hard-Prompt-Cap"] = std::to_string(hard_prompt_cap);
             return res;
         }
 
-        auto compacted = compact_request(std::move(body));
-        if (compacted.prompt_tokens > options_.hard_prompt_cap) {
+        auto compacted = compact_request(std::move(body), hard_prompt_cap);
+        if (compacted.prompt_tokens > hard_prompt_cap) {
             return make_error_response(
                 "unable to compact the conversation under the configured prompt cap",
                 ERROR_TYPE_EXCEED_CONTEXT_SIZE);
@@ -565,6 +573,8 @@ public:
         }
         auto res = forward_request(req, /* is_get */ false, safe_json_to_str(compacted.body), stream);
         res->headers["X-Llama-Proxy-Compacted"] = compacted.compacted ? "1" : "0";
+        res->headers["X-Llama-Proxy-Compaction-Trigger"] = std::to_string(compaction_trigger);
+        res->headers["X-Llama-Proxy-Hard-Prompt-Cap"] = std::to_string(hard_prompt_cap);
         return res;
     }
 
@@ -576,6 +586,26 @@ private:
     std::atomic<uint64_t> summary_cache_hits_ = 0;
     std::atomic<uint64_t> summary_cache_misses_ = 0;
     std::atomic<uint64_t> compactions_ = 0;
+
+    int select_hard_prompt_cap(const std::string & model_name) const {
+        if (!model_name.empty()) {
+            auto it = options_.model_hard_prompt_caps.find(model_name);
+            if (it != options_.model_hard_prompt_caps.end()) {
+                return it->second;
+            }
+        }
+        return options_.hard_prompt_cap;
+    }
+
+    int select_compaction_trigger(const std::string & model_name) const {
+        if (!model_name.empty()) {
+            auto it = options_.model_compaction_triggers.find(model_name);
+            if (it != options_.model_compaction_triggers.end()) {
+                return it->second;
+            }
+        }
+        return options_.compaction_trigger;
+    }
 
     static server_http_res_ptr make_error_response(const std::string & message, error_type type) {
         auto res = std::make_unique<server_http_res>();
@@ -857,7 +887,7 @@ private:
         return rebuilt;
     }
 
-    compact_attempt compact_request(json body) {
+    compact_attempt compact_request(json body, int hard_prompt_cap) {
         compact_attempt best;
         best.body = body;
         const std::string model_name = json_value(body, "model", std::string());
@@ -913,7 +943,7 @@ private:
                         best.summary_cache_key = cache_key;
                     }
 
-                    if (candidate_tokens <= options_.hard_prompt_cap) {
+                    if (candidate_tokens <= hard_prompt_cap) {
                         return best;
                     }
                 }
@@ -936,6 +966,8 @@ static void print_proxy_usage(char ** argv) {
     LOG("  --model-alias NAME             model alias to inject into proxied chat requests\n");
     LOG("  --hard-prompt-cap N            max rendered prompt tokens after compaction (default: 32000)\n");
     LOG("  --compaction-trigger N         trigger compaction above this rendered token count (default: 24000)\n");
+    LOG("  --model-hard-prompt-cap M=N    per-model prompt cap override, repeatable\n");
+    LOG("  --model-compaction-trigger M=N per-model compaction trigger override, repeatable\n");
     LOG("  --recent-raw-tail N            keep the latest N plain chat turns verbatim (default: 8)\n");
     LOG("  --first-summary-target N       first-pass summary target in tokens (default: 800)\n");
     LOG("  --second-summary-target N      second-pass summary target in tokens (default: 400)\n");
@@ -957,6 +989,21 @@ static bool parse_proxy_args(int argc,
         }
         ++index;
         return argv[index];
+    };
+
+    auto parse_model_int = [](const std::string & raw, const char * arg_name) -> std::pair<std::string, int> {
+        const auto pos = raw.find('=');
+        if (pos == std::string::npos || pos == 0 || pos + 1 >= raw.size()) {
+            throw std::invalid_argument(std::string("expected MODEL=VALUE for ") + arg_name);
+        }
+
+        const std::string model = trim_copy(raw.substr(0, pos));
+        const std::string value_str = trim_copy(raw.substr(pos + 1));
+        if (model.empty() || value_str.empty()) {
+            throw std::invalid_argument(std::string("expected MODEL=VALUE for ") + arg_name);
+        }
+
+        return {model, std::stoi(value_str)};
     };
 
     for (int i = 1; i < argc; ++i) {
@@ -989,6 +1036,16 @@ static bool parse_proxy_args(int argc,
         }
         if (arg == "--compaction-trigger") {
             options.compaction_trigger = std::stoi(require_value(i, "--compaction-trigger"));
+            continue;
+        }
+        if (arg == "--model-hard-prompt-cap") {
+            auto [model, value] = parse_model_int(require_value(i, "--model-hard-prompt-cap"), "--model-hard-prompt-cap");
+            options.model_hard_prompt_caps[model] = value;
+            continue;
+        }
+        if (arg == "--model-compaction-trigger") {
+            auto [model, value] = parse_model_int(require_value(i, "--model-compaction-trigger"), "--model-compaction-trigger");
+            options.model_compaction_triggers[model] = value;
             continue;
         }
         if (arg == "--recent-raw-tail") {

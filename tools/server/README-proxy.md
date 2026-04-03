@@ -15,14 +15,20 @@ The default deployment now runs `llama-server` in router mode on an 8 GB class G
 
 The backend uses router autoload. The first request for a model loads it automatically, `MODELS_MAX=1` ensures only one model stays active at a time, and `SLEEP_IDLE_SECONDS=1800` makes the active child destroy its model/context after 30 minutes idle so VRAM returns to empty.
 
-Prompt budgeting still uses backend `POST /apply-template` and `POST /tokenize`, so the backend remains the single source of truth for template rendering. The mixed bundle now uses 32k router contexts across all three models, which is enough for larger editor prompts while staying much more practical on 8 GB hardware than a blanket 128k default.
+Prompt budgeting still uses backend `POST /apply-template` and `POST /tokenize`, so the backend remains the single source of truth for template rendering. The mixed bundle now uses model-specific contexts and proxy caps:
+
+- `gemma4-4b-instruct`: `65536` ctx and a higher proxy cap
+- `mistral-nemo-12b-instruct`: `32768` ctx
+- `qwen-coder-7b-instruct`: `32768` ctx
+
+The proxy is now model-aware, so Gemma can accept larger prompts without forcing the 32k models to do the same.
 
 For 8 GB VRAM systems, the compose defaults are tuned to maximize fit reliability while keeping decode work on GPU:
 
-- `-ctk q4_0 -ctv q8_0` keeps KV cache compact while remaining compatible with Gemma 4.
+- `gemma4-4b-instruct` gets a larger `batch-size`, `ubatch-size`, and dedicated thread settings in the generated router preset.
+- shared defaults use `q4_0` / `q8_0`, while Gemma overrides to `q4_0` / `q4_0` to leave more headroom for `64k`.
 - `-fit on -fitt 256` allows tighter VRAM packing than the default 1024 MiB margin.
-- `-ngl all` keeps as many layers on GPU as possible (subject to fit safety checks).
-- `-np 1` avoids extra slot-related KV allocations.
+- shared defaults still keep `n-gpu-layers = all`, `parallel = 1`, and `flash-attn = true`.
 
 ## Docker Compose
 
@@ -30,6 +36,7 @@ Use:
 
 - [docker-compose.proxy.yml](./docker-compose.proxy.yml)
 - [proxy-compose.env.example](./proxy-compose.env.example)
+- [README-gemma64.md](./README-gemma64.md) for a dedicated single-model Gemma 4 64k profile
 
 Quick start:
 
@@ -46,8 +53,9 @@ Edit only these values in `.env` for the default path:
 - `PUBLIC_API_KEY`
 - optional: `HF_TOKEN`
 - optional: `TS_IP`
-- optional proxy budgeting knobs (`HARD_PROMPT_CAP`, `COMPACTION_TRIGGER`)
-- optional runtime knobs (`MODELS_MAX`, `SLEEP_IDLE_SECONDS`, `N_BATCH`, etc.)
+- optional proxy budgeting knobs (`*_HARD_PROMPT_CAP`, `*_COMPACTION_TRIGGER`)
+- optional per-model router knobs (`GEMMA4_CTX_SIZE`, `MISTRAL_NEMO_CTX_SIZE`, `QWEN_CODER_CTX_SIZE`, etc.)
+- optional backend-wide fit knobs (`FIT_MODE`, `FIT_TARGET_MIB`)
 
 This starts:
 
@@ -56,14 +64,20 @@ This starts:
 
 The compose file passes the proxy prompt-budget limits from `.env`:
 
-- `HARD_PROMPT_CAP` maps to `--hard-prompt-cap`
-- `COMPACTION_TRIGGER` maps to `--compaction-trigger`
+- `DEFAULT_HARD_PROMPT_CAP` / `DEFAULT_COMPACTION_TRIGGER` remain the fallback proxy limits
+- `GEMMA4_*`, `MISTRAL_NEMO_*`, and `QWEN_CODER_*` prompt caps are passed as per-model overrides
+- the backend renders `/tmp/router-models.ini` from `.env` before startup, so per-model ctx and batch settings live in `.env`, not just `router-models.ini`
 
-The default `32000` / `24000` pair is safe for the current 32k bundle. If you only serve Nemo or Gemma and want to experiment with a longer context profile, raise these together and increase the matching `ctx-size` in `router-models.ini`.
+The shipped defaults expose `64k` only for Gemma while keeping Nemo and Qwen at `32k`.
 
 ```env
-HARD_PROMPT_CAP=32000
-COMPACTION_TRIGGER=24000
+DEFAULT_HARD_PROMPT_CAP=32000
+DEFAULT_COMPACTION_TRIGGER=24000
+GEMMA4_HARD_PROMPT_CAP=62000
+GEMMA4_COMPACTION_TRIGGER=48000
+GEMMA4_CTX_SIZE=65536
+MISTRAL_NEMO_CTX_SIZE=32768
+QWEN_CODER_CTX_SIZE=32768
 ```
 
 Useful commands:
@@ -84,16 +98,9 @@ If you want to run the two services without Compose, keep the same split:
   --models-preset ./tools/server/router-models.ini \
   --models-max 1 \
   --sleep-idle-seconds 1800 \
-  -fa on \
-  -np 1 \
   -fit on \
   -fitt 256 \
-  -ngl all \
-  -b 1024 \
-  -ub 256 \
   --context-shift \
-  -ctk q4_0 \
-  -ctv q8_0 \
   --host 127.0.0.1 \
   --port 8080
 ```
@@ -102,7 +109,11 @@ If you want to run the two services without Compose, keep the same split:
 ./build/bin/llama-server-proxy \
   --host 0.0.0.0 \
   --backend-base-url http://127.0.0.1:8080 \
-  --api-key replace-with-a-long-random-public-key
+  --api-key replace-with-a-long-random-public-key \
+  --hard-prompt-cap 32000 \
+  --compaction-trigger 24000 \
+  --model-hard-prompt-cap gemma4-4b-instruct=62000 \
+  --model-compaction-trigger gemma4-4b-instruct=48000
 ```
 
 Expose the proxy, not the backend.
@@ -125,12 +136,12 @@ The same `model` field can be set to `gemma4-4b-instruct` or `mistral-nemo-12b-i
 
 If the backend still fails health checks:
 
-1. Keep `N_PARALLEL=1`.
+1. Keep `DEFAULT_PARALLEL=1`.
 2. Lower `FIT_TARGET_MIB` from `256` to `128` (more aggressive fitting).
-3. Reduce `N_BATCH` to `512` and `N_UBATCH` to `128`.
-4. Reduce the per-model `ctx-size` values in `router-models.ini` if needed.
-5. If fitting still pushes any layer off CUDA, switch to `KV_CACHE_K_TYPE=q4_0` and `KV_CACHE_V_TYPE=q4_0`.
-6. As a last resort, set `N_GPU_LAYERS=auto`.
+3. Reduce `GEMMA4_BATCH_SIZE` to `1536` and `GEMMA4_UBATCH_SIZE` to `384` if Gemma becomes unstable.
+4. Reduce the per-model `*_CTX_SIZE` values in `.env` if needed.
+5. If Gemma still does not fit at `64k`, keep Nemo and Qwen at `32k` and lower only `GEMMA4_CTX_SIZE`.
+6. As a last resort, lower `DEFAULT_N_GPU_LAYERS` from `all`.
 
 This path favors GPU-backed decode performance while keeping the single loaded model small enough to fit and unload cleanly.
 
@@ -140,4 +151,4 @@ This path favors GPU-backed decode performance while keeping the single loaded m
 - Older context is collapsed into a synthetic memory block, while recent raw turns stay verbatim.
 - Summary results are cached in an in-memory LRU keyed by the compacted prefix.
 - `--hf-repo` defaults to `Q4_K_M` and automatically downloads `mmproj` files when present, which is why the Gemma 4 preset does not need a separate projector path.
-- Gemma 4 uses `n_embd_head_k = 512` in some layers, so it cannot run with `pq3_5` K-cache. The compose profile therefore defaults to `q4_0`/`q8_0` for mixed-router compatibility.
+- Gemma 4 uses `n_embd_head_k = 512` in some layers, so it cannot run with `pq3_5` K-cache. The compose profile therefore defaults to `q4_0`/`q8_0` for the shared path and overrides Gemma to `q4_0`/`q4_0`.

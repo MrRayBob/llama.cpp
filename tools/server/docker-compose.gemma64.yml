@@ -1,4 +1,4 @@
-name: llama-server-proxy
+name: llama-gemma64-fast
 
 x-llama-image: &llama-image
   image: local/llama.cpp:server-cuda
@@ -10,29 +10,48 @@ x-llama-image: &llama-image
 services:
   backend:
     <<: *llama-image
-    container_name: llama-router-backend
+    container_name: llama-gemma64-backend
     restart: unless-stopped
     gpus: all
     environment:
       HF_TOKEN: ${HF_TOKEN:-}
-    entrypoint: ["/bin/sh", "/config/render-router-models.sh", "/app/llama-server"]
+    entrypoint: ["/app/llama-server"]
     command:
       - --host
       - 0.0.0.0
-      - --models-preset
-      - /tmp/router-models.ini
-      - --models-max
-      - "${MODELS_MAX:-1}"
+      - --hf-repo
+      - ggml-org/gemma-4-E4B-it-GGUF:Q4_K_M
+      - --alias
+      - gemma4-4b-instruct
+      - --ctx-size
+      - "${CTX_SIZE:-65536}"
       - --sleep-idle-seconds
       - "${SLEEP_IDLE_SECONDS:-1800}"
+      - -fa
+      - on
       - -fit
       - "${FIT_MODE:-on}"
       - -fitt
-      - "${FIT_TARGET_MIB:-256}"
+      - "${FIT_TARGET_MIB:-128}"
+      - -ngl
+      - "${N_GPU_LAYERS:-all}"
+      - -np
+      - "${N_PARALLEL:-1}"
+      - -b
+      - "${N_BATCH:-2048}"
+      - -ub
+      - "${N_UBATCH:-512}"
+      - -t
+      - "${THREADS:-6}"
+      - -tb
+      - "${THREADS_BATCH:-12}"
       - --context-shift
+      - -ctk
+      - ${KV_CACHE_K_TYPE:-q4_0}
+      - -ctv
+      - ${KV_CACHE_V_TYPE:-q4_0}
     volumes:
       - ${HF_CACHE_DIR}:/root/.cache/huggingface
-      - ./render-router-models.sh:/config/render-router-models.sh:ro
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
       interval: 30s
@@ -42,7 +61,7 @@ services:
 
   proxy:
     <<: *llama-image
-    container_name: llama-router-proxy
+    container_name: llama-gemma64-proxy
     restart: unless-stopped
     depends_on:
       backend:
@@ -56,23 +75,11 @@ services:
       - --api-key
       - ${PUBLIC_API_KEY}
       - --hard-prompt-cap
-      - "${DEFAULT_HARD_PROMPT_CAP:-32000}"
+      - "${HARD_PROMPT_CAP:-62000}"
       - --compaction-trigger
-      - "${DEFAULT_COMPACTION_TRIGGER:-24000}"
-      - --model-hard-prompt-cap
-      - "gemma4-4b-instruct=${GEMMA4_HARD_PROMPT_CAP:-62000}"
-      - --model-compaction-trigger
-      - "gemma4-4b-instruct=${GEMMA4_COMPACTION_TRIGGER:-48000}"
-      - --model-hard-prompt-cap
-      - "mistral-nemo-12b-instruct=${MISTRAL_NEMO_HARD_PROMPT_CAP:-32000}"
-      - --model-compaction-trigger
-      - "mistral-nemo-12b-instruct=${MISTRAL_NEMO_COMPACTION_TRIGGER:-24000}"
-      - --model-hard-prompt-cap
-      - "qwen-coder-7b-instruct=${QWEN_CODER_HARD_PROMPT_CAP:-32000}"
-      - --model-compaction-trigger
-      - "qwen-coder-7b-instruct=${QWEN_CODER_COMPACTION_TRIGGER:-24000}"
+      - "${COMPACTION_TRIGGER:-48000}"
     ports:
-      - "${TS_IP:-127.0.0.1}:8080:8080"
+      - "${TS_IP:-127.0.0.1}:${HOST_PORT:-8082}:8080"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
       interval: 30s
