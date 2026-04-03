@@ -29,7 +29,7 @@ emit_optional_kv() {
 
     printf '[gemma4-4b-instruct]\n'
     printf 'hf-repo = ggml-org/gemma-4-E4B-it-GGUF:Q4_K_M\n'
-    printf 'ctx-size = %s\n' "${GEMMA4_CTX_SIZE:-65536}"
+    printf 'ctx-size = %s\n' "${GEMMA4_CTX_SIZE:-98304}"
     printf 'batch-size = %s\n' "${GEMMA4_BATCH_SIZE:-2048}"
     printf 'ubatch-size = %s\n' "${GEMMA4_UBATCH_SIZE:-512}"
     emit_optional_kv "threads" "${GEMMA4_THREADS:-6}"

@@ -17,7 +17,7 @@ The backend uses router autoload. The first request for a model loads it automat
 
 Prompt budgeting still uses backend `POST /apply-template` and `POST /tokenize`, so the backend remains the single source of truth for template rendering. The mixed bundle now uses model-specific contexts and proxy caps:
 
-- `gemma4-4b-instruct`: `65536` ctx and a higher proxy cap
+- `gemma4-4b-instruct`: `98304` ctx, with proxy compaction and proxy prompt caps disabled
 - `mistral-nemo-12b-instruct`: `32768` ctx
 - `qwen-coder-7b-instruct`: `32768` ctx
 
@@ -26,7 +26,7 @@ The proxy is now model-aware, so Gemma can accept larger prompts without forcing
 For 8 GB VRAM systems, the compose defaults are tuned to maximize fit reliability while keeping decode work on GPU:
 
 - `gemma4-4b-instruct` gets a larger `batch-size`, `ubatch-size`, and dedicated thread settings in the generated router preset.
-- shared defaults use `q4_0` / `q8_0`, while Gemma overrides to `q4_0` / `q4_0` to leave more headroom for `64k`.
+- shared defaults use `q4_0` / `q8_0`, while Gemma overrides to `q4_0` / `q4_0` to leave more headroom for `96k`.
 - `-fit on -fitt 256` allows tighter VRAM packing than the default 1024 MiB margin.
 - shared defaults still keep `n-gpu-layers = all`, `parallel = 1`, and `flash-attn = true`.
 
@@ -68,17 +68,19 @@ The compose file passes the proxy prompt-budget limits from `.env`:
 - `GEMMA4_*`, `MISTRAL_NEMO_*`, and `QWEN_CODER_*` prompt caps are passed as per-model overrides
 - the backend renders `/tmp/router-models.ini` from `.env` before startup, so per-model ctx and batch settings live in `.env`, not just `router-models.ini`
 
-The shipped defaults expose `64k` only for Gemma while keeping Nemo and Qwen at `32k`.
+The shipped defaults expose `96k` only for Gemma while keeping Nemo and Qwen at `32k`.
 
 ```env
 DEFAULT_HARD_PROMPT_CAP=32000
 DEFAULT_COMPACTION_TRIGGER=24000
-GEMMA4_HARD_PROMPT_CAP=62000
-GEMMA4_COMPACTION_TRIGGER=48000
-GEMMA4_CTX_SIZE=65536
+GEMMA4_HARD_PROMPT_CAP=0
+GEMMA4_COMPACTION_TRIGGER=0
+GEMMA4_CTX_SIZE=98304
 MISTRAL_NEMO_CTX_SIZE=32768
 QWEN_CODER_CTX_SIZE=32768
 ```
+
+Set a model's `*_COMPACTION_TRIGGER=0` to disable proxy rewriting for that model, and `*_HARD_PROMPT_CAP=0` to let backend context limits be the only cap.
 
 Useful commands:
 
@@ -112,8 +114,8 @@ If you want to run the two services without Compose, keep the same split:
   --api-key replace-with-a-long-random-public-key \
   --hard-prompt-cap 32000 \
   --compaction-trigger 24000 \
-  --model-hard-prompt-cap gemma4-4b-instruct=62000 \
-  --model-compaction-trigger gemma4-4b-instruct=48000
+  --model-hard-prompt-cap gemma4-4b-instruct=0 \
+  --model-compaction-trigger gemma4-4b-instruct=0
 ```
 
 Expose the proxy, not the backend.
@@ -140,14 +142,14 @@ If the backend still fails health checks:
 2. Lower `FIT_TARGET_MIB` from `256` to `128` (more aggressive fitting).
 3. Reduce `GEMMA4_BATCH_SIZE` to `1536` and `GEMMA4_UBATCH_SIZE` to `384` if Gemma becomes unstable.
 4. Reduce the per-model `*_CTX_SIZE` values in `.env` if needed.
-5. If Gemma still does not fit at `64k`, keep Nemo and Qwen at `32k` and lower only `GEMMA4_CTX_SIZE`.
+5. If Gemma does not fit at `96k`, keep Nemo and Qwen at `32k` and lower only `GEMMA4_CTX_SIZE`.
 6. As a last resort, lower `DEFAULT_N_GPU_LAYERS` from `all`.
 
 This path favors GPU-backed decode performance while keeping the single loaded model small enough to fit and unload cleanly.
 
 ## Notes
 
-- Chat requests are only rewritten when the rendered prompt crosses the configured compaction trigger.
+- Chat requests are only rewritten when the rendered prompt crosses the configured compaction trigger. Setting that trigger to `0` disables rewriting for that model.
 - Older context is collapsed into a synthetic memory block, while recent raw turns stay verbatim.
 - Summary results are cached in an in-memory LRU keyed by the compacted prefix.
 - `--hf-repo` defaults to `Q4_K_M` and automatically downloads `mmproj` files when present, which is why the Gemma 4 preset does not need a separate projector path.

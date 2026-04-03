@@ -553,7 +553,7 @@ public:
         auto rendered_prompt = render_prompt(body);
         const int rendered_tokens = tokenize_prompt(rendered_prompt, model_name);
 
-        if (rendered_tokens <= compaction_trigger) {
+        if (compaction_trigger <= 0 || rendered_tokens <= compaction_trigger) {
             auto res = forward_request(req, /* is_get */ false, safe_json_to_str(body), stream);
             res->headers["X-Llama-Proxy-Compacted"] = "0";
             res->headers["X-Llama-Proxy-Compaction-Trigger"] = std::to_string(compaction_trigger);
@@ -562,7 +562,7 @@ public:
         }
 
         auto compacted = compact_request(std::move(body), hard_prompt_cap);
-        if (compacted.prompt_tokens > hard_prompt_cap) {
+        if (hard_prompt_cap > 0 && compacted.prompt_tokens > hard_prompt_cap) {
             return make_error_response(
                 "unable to compact the conversation under the configured prompt cap",
                 ERROR_TYPE_EXCEED_CONTEXT_SIZE);
@@ -943,7 +943,7 @@ private:
                         best.summary_cache_key = cache_key;
                     }
 
-                    if (candidate_tokens <= hard_prompt_cap) {
+                    if (hard_prompt_cap > 0 && candidate_tokens <= hard_prompt_cap) {
                         return best;
                     }
                 }
@@ -964,8 +964,8 @@ static void print_proxy_usage(char ** argv) {
     LOG("  --backend-api-key KEY          backend Authorization bearer token\n");
     LOG("  --chat-template-file PATH      deprecated, ignored (proxy uses backend /apply-template)\n");
     LOG("  --model-alias NAME             model alias to inject into proxied chat requests\n");
-    LOG("  --hard-prompt-cap N            max rendered prompt tokens after compaction (default: 32000)\n");
-    LOG("  --compaction-trigger N         trigger compaction above this rendered token count (default: 24000)\n");
+    LOG("  --hard-prompt-cap N            max rendered prompt tokens after compaction; 0 disables the cap (default: 32000)\n");
+    LOG("  --compaction-trigger N         trigger compaction above this rendered token count; 0 disables compaction (default: 24000)\n");
     LOG("  --model-hard-prompt-cap M=N    per-model prompt cap override, repeatable\n");
     LOG("  --model-compaction-trigger M=N per-model compaction trigger override, repeatable\n");
     LOG("  --recent-raw-tail N            keep the latest N plain chat turns verbatim (default: 8)\n");

@@ -60,9 +60,9 @@ services:
       - --compaction-trigger
       - "${DEFAULT_COMPACTION_TRIGGER:-24000}"
       - --model-hard-prompt-cap
-      - "gemma4-4b-instruct=${GEMMA4_HARD_PROMPT_CAP:-62000}"
+      - "gemma4-4b-instruct=${GEMMA4_HARD_PROMPT_CAP:-0}"
       - --model-compaction-trigger
-      - "gemma4-4b-instruct=${GEMMA4_COMPACTION_TRIGGER:-48000}"
+      - "gemma4-4b-instruct=${GEMMA4_COMPACTION_TRIGGER:-0}"
       - --model-hard-prompt-cap
       - "mistral-nemo-12b-instruct=${MISTRAL_NEMO_HARD_PROMPT_CAP:-32000}"
       - --model-compaction-trigger
