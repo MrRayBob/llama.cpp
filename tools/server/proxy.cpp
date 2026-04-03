@@ -541,10 +541,11 @@ public:
         if (!options_.model_alias.empty()) {
             body["model"] = options_.model_alias;
         }
+        const std::string model_name = json_value(body, "model", std::string());
 
         const bool stream = json_value(body, "stream", false);
         auto rendered_prompt = render_prompt(body);
-        const int rendered_tokens = tokenize_prompt(rendered_prompt);
+        const int rendered_tokens = tokenize_prompt(rendered_prompt, model_name);
 
         if (rendered_tokens <= options_.compaction_trigger) {
             auto res = forward_request(req, /* is_get */ false, safe_json_to_str(body), stream);
@@ -746,7 +747,7 @@ private:
         return rendered.at("prompt").get<std::string>();
     }
 
-    int tokenize_prompt(const std::string & prompt) const {
+    int tokenize_prompt(const std::string & prompt, const std::string & model_name = {}) const {
         auto [client, parts] = make_backend_client();
         const auto path = join_url_path(parts.path, "/tokenize");
         const auto headers = copy_request_headers({}, options_.backend_api_key);
@@ -755,6 +756,9 @@ private:
             {"add_special", false},
             {"parse_special", true},
         };
+        if (!model_name.empty()) {
+            body["model"] = model_name;
+        }
 
         auto result = client.Post(path.c_str(), headers, safe_json_to_str(body), "application/json; charset=utf-8");
         if (!result) {
@@ -856,9 +860,10 @@ private:
     compact_attempt compact_request(json body) {
         compact_attempt best;
         best.body = body;
+        const std::string model_name = json_value(body, "model", std::string());
 
         if (!body.contains("messages") || !body.at("messages").is_array()) {
-            best.prompt_tokens = tokenize_prompt(render_prompt(body));
+            best.prompt_tokens = tokenize_prompt(render_prompt(body), model_name);
             return best;
         }
 
@@ -898,7 +903,7 @@ private:
                     json candidate = body;
                     candidate["messages"] = rebuild_messages_with_summary(original_messages, system_prefix_count, boundary, summary);
 
-                    const int candidate_tokens = tokenize_prompt(render_prompt(candidate));
+                    const int candidate_tokens = tokenize_prompt(render_prompt(candidate), model_name);
                     if (candidate_tokens < best_tokens) {
                         best_tokens = candidate_tokens;
                         best.body = candidate;
@@ -916,7 +921,7 @@ private:
         }
 
         if (!best.compacted) {
-            best.prompt_tokens = tokenize_prompt(render_prompt(body));
+            best.prompt_tokens = tokenize_prompt(render_prompt(body), model_name);
         }
         return best;
     }
